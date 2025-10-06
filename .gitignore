@@ -24,9 +24,6 @@ tmp/
 go.work
 go.work.sum
 
-# If you later vendor deps, remove the comment:
-# vendor/
-
 # Editors
 .vscode/
 .idea/
@@ -41,8 +38,7 @@ Thumbs.db
 .env.*
 **/.env
 **/.env.*
-# keep example envs tracked
-!**/.env.example
-# local Compose envs (don’t commit real values)
 deploy/compose/.env
 deploy/compose/.env.*
+# keep example envs tracked
+!**/.env.example
