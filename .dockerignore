@@ -1,0 +1,43 @@
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+*.code-workspace
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+.env
+*.env
+**/.env
+**/*.env
+!deploy/compose/.env.example  # keep the example
+
+bin/
+dist/
+build/
+out/
+coverage/
+*.coverprofile
+*.test
+*.out
+*.log
+tmp/
+**/tmp/
+
+docs/
+scripts/
+test/
+testdata/
+monitoring/
+deploy/compose/
+helm/
+deploy/k8s/
+
+# Keep Docker build files themselves
+!deploy/docker/Dockerfile
+
