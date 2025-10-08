@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -15,7 +16,7 @@ import (
 	h3 "github.com/uber/h3-go/v4"
 )
 
-func getenv(key string, def string) string {
+func getenv(key, def string) string {
 	value := os.Getenv(key)
 	if value != "" {
 		return value
@@ -56,7 +57,14 @@ func testGeoServerWFS(baseURL string) error {
 	// Sample wfs request for demo:places layer (comes with default demo data)
 	wfsURL := fmt.Sprintf("%s/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=demo:places&outputFormat=application/json&count=2",
 		strings.TrimRight(baseURL, "/"))
-	resp, err := http.Get(wfsURL)
+	u, err := url.Parse(wfsURL)
+	if err != nil {
+		return fmt.Errorf("bad WFS URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("unsupported scheme: %s", u.Scheme)
+	}
+	resp, err := http.Get(u.String())
 	if err != nil {
 		return fmt.Errorf("http get WFS: %w", err)
 	}
@@ -100,7 +108,6 @@ func testKafka(brokers []string, topic string) error {
 	_, _, err = prod.SendMessage(&sarama.ProducerMessage{
 		Topic: topic, Value: sarama.ByteEncoder(msgBytes),
 	})
-
 	if err != nil {
 		return fmt.Errorf("send message: %w", err)
 	}
@@ -153,15 +160,15 @@ func main() {
 
 	if err := testRedis(ctx, redisAddr); err != nil {
 		fmt.Println("Redis error:", err)
-		os.Exit(1)
+		return
 	}
 	if err := testGeoServerWFS(geoserver); err != nil {
 		fmt.Println("Geoserver error:", err)
-		os.Exit(1)
+		return
 	}
 	if err := testKafka(brokers, topic); err != nil {
 		fmt.Println("Kafka error:", err)
-		os.Exit(1)
+		return
 	}
 	demoH3()
 	fmt.Println("All tests completed")

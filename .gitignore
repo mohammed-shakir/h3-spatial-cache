@@ -17,6 +17,7 @@ build/
 dist/
 out/
 tmp/
+results/
 *.tmp
 *.log
 

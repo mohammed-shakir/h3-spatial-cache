@@ -1,0 +1,106 @@
+version: "2"
+
+run:
+  go: "1.24.0"
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    # Correctness & bugs
+    - govet
+    - staticcheck
+    - errcheck
+    - ineffassign
+    - gocritic
+    - bodyclose
+    - errorlint
+    - wrapcheck
+    - copyloopvar
+    - intrange
+    - unused
+    - gosec
+    - revive
+    - misspell
+    - nolintlint
+    - forbidigo
+    - prealloc
+    - unparam
+    - depguard
+
+  # Exclude dirs from diagnostics
+  exclusions:
+    paths:
+      - ^deploy/
+      - ^docs?/
+      - ^monitoring/
+      - ^results/
+    rules:
+      - path: ^cmd/
+        linters: [forbidigo]
+      - path: ^cmd/baseline-loadgen/
+        linters: [gosec]
+        text: G404
+
+  # Linter settings
+  settings:
+    revive:
+      severity: warning
+      rules:
+        - name: exported
+        - name: blank-imports
+        - name: error-naming
+        - name: if-return
+        - name: increment-decrement
+        - name: superfluous-else
+        - name: var-naming
+        - name: receiver-naming
+        - name: empty-lines
+        - name: import-shadowing
+        - name: unnecessary-stmt
+
+    misspell:
+      locale: US
+
+    forbidigo:
+      # No raw prints/logs in non cli
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?\('
+        - pattern: '^log\.Print(f|ln)?\('
+
+    depguard:
+      # Allowed/denied imports
+      rules:
+        Main:
+          files: [$all]
+          allow:
+            - $gostd
+            - log/slog
+            - github.com/redis/go-redis/v9
+            - github.com/IBM/sarama
+            - github.com/uber/h3-go/v4
+          deny:
+            - pkg: github.com/pkg/errors
+              desc: "Use Go 1.20+ errors (errors.Is/As, fmt.Errorf with %w)."
+            - pkg: ^log$
+              desc: "Use slog (structured logging) in non-cmd packages."
+
+# Formatters
+formatters:
+  enable:
+    - gci
+    - gofumpt
+  settings:
+    gci:
+      sections:
+        [
+          standard,
+          default,
+          "prefix(github.com/mohammed-shakir/h3-spatial-cache)",
+        ]
+    gofumpt:
+      extra-rules: true

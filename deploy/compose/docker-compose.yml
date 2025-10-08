@@ -115,7 +115,7 @@ services:
       kafka:
         condition: service_healthy
     ports:
-      - "8088:8088"
+      - "8090:8090"
     networks: [gisnet]
 
 networks:

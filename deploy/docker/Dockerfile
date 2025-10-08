@@ -14,12 +14,12 @@ COPY . .
 ENV CGO_ENABLED=1 GOOS=linux
 RUN --mount=type=cache,target=/root/.cache/go-build \
   --mount=type=cache,target=/go/pkg/mod \
-  go build -trimpath -ldflags="-s -w" -o /out/loadgen ./cmd/loadgen
+  go build -trimpath -ldflags="-s -w" -o /out/baseline-server ./cmd/baseline-server
 
 # Runtime
 FROM gcr.io/distroless/base-debian12:nonroot
 WORKDIR /app
-COPY --from=builder /out/loadgen /app/loadgen
+COPY --from=builder /out/baseline-server /app/baseline-server
 USER nonroot:nonroot
-ENTRYPOINT ["/app/loadgen"]
+ENTRYPOINT ["/app/baseline-server"]
 

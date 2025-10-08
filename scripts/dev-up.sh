@@ -45,7 +45,7 @@ wait_healthy geoserver
 
 # Kafka
 echo "Ensure kafka topic exists: ${KAFKA_TOPIC}"
-docker compose exec -T kafka /opt/bitnami/kafka/bin/kafka-topics.sh \
+docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
 	--bootstrap-server localhost:9092 \
 	--create --if-not-exists --replication-factor 1 --partitions 1 \
 	--topic "${KAFKA_TOPIC}" >/dev/null 2>&1 || true
