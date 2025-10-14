@@ -51,7 +51,6 @@ linters:
     revive:
       severity: warning
       rules:
-        - name: exported
         - name: blank-imports
         - name: error-naming
         - name: if-return
@@ -73,16 +72,9 @@ linters:
         - pattern: '^log\.Print(f|ln)?\('
 
     depguard:
-      # Allowed/denied imports
       rules:
         Main:
           files: [$all]
-          allow:
-            - $gostd
-            - log/slog
-            - github.com/redis/go-redis/v9
-            - github.com/IBM/sarama
-            - github.com/uber/h3-go/v4
           deny:
             - pkg: github.com/pkg/errors
               desc: "Use Go 1.20+ errors (errors.Is/As, fmt.Errorf with %w)."

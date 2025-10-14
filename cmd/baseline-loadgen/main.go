@@ -16,20 +16,23 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 type Config struct {
-	TargetURL      string
-	LayerName      string
-	Concurrency    int
-	Duration       time.Duration
-	ZipfS          float64
-	ZipfV          float64
-	BBoxCount      int
-	OutputPrefix   string
-	RequestTimeout time.Duration
+	TargetURL       string
+	LayerName       string
+	Concurrency     int
+	Duration        time.Duration
+	ZipfS           float64
+	ZipfV           float64
+	BBoxCount       int
+	OutputPrefix    string
+	RequestTimeout  time.Duration
+	AppendTimestamp bool
+	TimestampFormat string
 }
 
 func loadConfig() Config {
@@ -43,6 +46,8 @@ func loadConfig() Config {
 	flag.IntVar(&cfg.BBoxCount, "bboxes", 128, "Distinct BBOXes in pool")
 	flag.StringVar(&cfg.OutputPrefix, "out", "results/baseline", "Output file prefix (JSON/CSV)")
 	flag.DurationVar(&cfg.RequestTimeout, "timeout", 10*time.Second, "Per-request timeout")
+	flag.BoolVar(&cfg.AppendTimestamp, "append-ts", true, "Append timestamp to output prefix")
+	flag.StringVar(&cfg.TimestampFormat, "ts-format", "iso", "Timestamp format: iso|unix|none")
 	flag.Parse()
 	return cfg
 }
@@ -127,6 +132,17 @@ func main() {
 		log.Fatalf("mkdir results: %v", err)
 	}
 
+	prefix := cfg.OutputPrefix
+	if cfg.AppendTimestamp {
+		switch strings.ToLower(cfg.TimestampFormat) {
+		case "none":
+		case "unix":
+			prefix = fmt.Sprintf("%s_%d", prefix, time.Now().Unix())
+		default: // "iso"
+			prefix = fmt.Sprintf("%s_%s", prefix, time.Now().UTC().Format("20060102_150405Z"))
+		}
+	}
+
 	// Precompute random workload
 	seed := time.Now().UnixNano()
 	r := rand.New(rand.NewSource(seed))
@@ -155,8 +171,8 @@ func main() {
 	defer cancel()
 
 	// Prepare output files
-	csvPath := cfg.OutputPrefix + "_samples.csv"
-	jsonPath := cfg.OutputPrefix + "_summary.json"
+	csvPath := prefix + "_samples.csv"
+	jsonPath := prefix + "_summary.json"
 	csvFile, err := os.Create(filepath.Clean(csvPath))
 	if err != nil {
 		log.Printf("open csv: %v", err)

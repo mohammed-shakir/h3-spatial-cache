@@ -104,7 +104,7 @@ You can run the app either locally or inside the docker container.
 
 ```bash
 set -o allexport; . deploy/compose/.env; set +o allexport
-go run ./cmd/baseline-server
+go run ./cmd/middleware
 ```
 
 #### Inside Docker
@@ -135,13 +135,20 @@ go run ./cmd/baseline-loadgen \
 -duration 60s \
 -zipf-s 1.3 -zipf-v 1.0 \
 -bboxes 128 \
--out results/baseline_$(date +%s)
+-out results/baseline \
+-append-ts=true -ts-format=iso
+```
+
+or use default parameters:
+
+```bash
+go run ./cmd/baseline-loadgen -out results/baseline
 ```
 
 Optionally, you can capture container cpu/memory stats during the load test:
 
 ```bash
-./scripts/capture-stats.sh geoserver postgis > results/docker_stats_$(date +%s).csv
+./scripts/capture-stats.sh geoserver postgis > results/docker_stats_$(date -u +%Y%m%d_%H%M%SZ).csv
 ```
 
 The load test results will be saved in the `results/` directory.
@@ -156,6 +163,12 @@ When you are finished, you can stop the services using the provided script:
 
 # Remove containers only (keep volumes)
 ./scripts/dev-down.sh --keep-volumes
+```
+
+Nuke docker:
+
+```bash
+docker kill $(docker ps -q) 2>/dev/null; docker system prune -af --volumes
 ```
 
 ### Lint
