@@ -81,6 +81,12 @@ Generate a kafka cluster id and set it in the .env file:
 docker run --rm apache/kafka:3.8.0 /opt/kafka/bin/kafka-storage.sh random-uuid
 ```
 
+Create the `results/` directory to store load test results:
+
+```bash
+mkdir -p results
+```
+
 ### Start the Services
 
 To start the services, you can use the provided scripts or run the commands
