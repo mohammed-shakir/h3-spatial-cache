@@ -5,7 +5,6 @@ import (
 	"net/http"
 )
 
-// Logging is a placeholder for request logging (you can expand with request IDs, etc.).
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
@@ -16,12 +15,13 @@ func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// Recover provides a basic panic recovery middleware.
+// basic panic recovery middleware
 func Recover() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
+					slog.Error("panic recovered", "err", rec)
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
 			}()
@@ -31,7 +31,7 @@ func Recover() func(http.Handler) http.Handler {
 	}
 }
 
-// CORS is a minimal CORS placeholder.
+// minimal cors placeholder
 func CORS() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {

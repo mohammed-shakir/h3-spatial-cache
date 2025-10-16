@@ -1,18 +1,58 @@
 package router
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
-	"github.com/mohammed-shakir/h3-spatial-cache/internal/model"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 )
 
-// validates user input for /query and returns a normalized request
+// receives validated query requests and serves them
+type QueryHandler interface {
+	HandleQuery(ctx context.Context, w http.ResponseWriter, r *http.Request, q model.QueryRequest)
+}
+
+// validates input query params and calls the handler
+func HandleQuery(logger *slog.Logger, _ config.Config, h QueryHandler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+
+		q, warn, err := ParseQueryRequest(r)
+		if warn != "" {
+			logger.Warn(warn)
+		}
+		if err != nil {
+			http.Error(sw, err.Error(), http.StatusBadRequest)
+			observability.ObserveHTTP(r.Method, "/query", http.StatusBadRequest, time.Since(start).Seconds())
+			return
+		}
+
+		h.HandleQuery(r.Context(), sw, r, q)
+		observability.ObserveHTTP(r.Method, "/query", sw.code, time.Since(start).Seconds())
+	}
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
 func ParseQueryRequest(r *http.Request) (model.QueryRequest, string, error) {
 	var warn string
 
@@ -22,30 +62,41 @@ func ParseQueryRequest(r *http.Request) (model.QueryRequest, string, error) {
 	}
 
 	rawBBox := strings.TrimSpace(r.URL.Query().Get("bbox"))
+	rawPoly := strings.TrimSpace(r.URL.Query().Get("polygon"))
 	filters := strings.TrimSpace(r.URL.Query().Get("filters"))
-	var bbox *model.BBox
 
-	// drop bbox if filters are supplied
-	if rawBBox != "" && filters != "" {
-		warn = "both bbox and filters supplied; dropping bbox (KVP shorthand filters are mutually exclusive)"
+	// drop bbox if polygon is given (polygon wins)
+	if rawBBox != "" && rawPoly != "" {
+		warn = "both bbox and polygon supplied; preferring polygon"
 		rawBBox = ""
 	}
 
+	var bbox *model.BBox
 	if rawBBox != "" {
 		bb, err := parseBBOX(rawBBox)
 		if err != nil {
-			return model.QueryRequest{}, "", fmt.Errorf("invalid bbox: %w", err)
+			return model.QueryRequest{}, warn, fmt.Errorf("invalid bbox: %w", err)
 		}
 		bbox = &bb
 	}
 
+	var poly *model.Polygon
+	if rawPoly != "" {
+		p, err := parsePolygon(rawPoly)
+		if err != nil {
+			return model.QueryRequest{}, warn, fmt.Errorf("invalid polygon: %w", err)
+		}
+		poly = &p
+	}
+
 	if filters != "" && !isSafeCQL(filters) {
-		return model.QueryRequest{}, "", errors.New("invalid or disallowed cql_filter")
+		return model.QueryRequest{}, warn, errors.New("invalid or disallowed cql_filter")
 	}
 
 	return model.QueryRequest{
 		Layer:   layer,
 		BBox:    bbox,
+		Polygon: poly,
 		Filters: filters,
 	}, warn, nil
 }
@@ -106,20 +157,18 @@ func isSafeCQL(s string) bool {
 	return safeCQLPattern.MatchString(s)
 }
 
-// encodes a wfs query to values (useful for tests). Example:
-func BuildQuery(q model.QueryRequest) url.Values {
-	params := url.Values{}
-	params.Set("service", "WFS")
-	params.Set("version", "2.0.0")
-	params.Set("request", "GetFeature")
-	params.Set("typeNames", q.Layer)
-	if q.BBox != nil {
-		params.Set("bbox", fmt.Sprintf("%.6f,%.6f,%.6f,%.6f,%s",
-			q.BBox.X1, q.BBox.Y1, q.BBox.X2, q.BBox.Y2, q.BBox.SRID))
+func parsePolygon(raw string) (model.Polygon, error) {
+	var tmp struct {
+		Type string `json:"type"`
 	}
-	if q.Filters != "" {
-		params.Set("cql_filter", q.Filters)
+	if err := json.Unmarshal([]byte(raw), &tmp); err != nil {
+		return model.Polygon{}, fmt.Errorf("parse json: %w", err)
 	}
-	params.Set("outputFormat", "application/json")
-	return params
+	t := strings.TrimSpace(tmp.Type)
+	switch t {
+	case "Polygon", "MultiPolygon":
+		return model.Polygon{GeoJSON: raw}, nil
+	default:
+		return model.Polygon{}, fmt.Errorf(`unsupported GeoJSON "type": %q (must be Polygon or MultiPolygon)`, t)
+	}
 }

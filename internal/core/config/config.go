@@ -12,6 +12,7 @@ type Config struct {
 	RedisAddr    string
 	KafkaBrokers string
 	H3Res        int
+	Scenario     string
 }
 
 func FromEnv() Config {
@@ -22,6 +23,7 @@ func FromEnv() Config {
 		RedisAddr:    getenv("REDIS_ADDR", "localhost:6379"),
 		KafkaBrokers: getenv("KAFKA_BROKERS", "localhost:9092"),
 		H3Res:        getint("H3_RES", 8),
+		Scenario:     getenv("SCENARIO", "baseline"),
 	}
 }
 
