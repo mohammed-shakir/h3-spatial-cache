@@ -64,7 +64,7 @@ func (e *Executor) ForwardWFS(_ context.Context, w http.ResponseWriter, r *http.
 
 		ModifyResponse: func(resp *http.Response) error {
 			dur := time.Since(start)
-			e.logger.Info("forward done",
+			e.logger.Debug("forward done",
 				"status", resp.StatusCode,
 				"duration", dur.String())
 			observability.ObserveUpstreamLatency("geoserver", dur.Seconds())
@@ -77,7 +77,7 @@ func (e *Executor) ForwardWFS(_ context.Context, w http.ResponseWriter, r *http.
 		},
 	}
 
-	e.logger.Info("forward WFS GetFeature",
+	e.logger.Debug("forward WFS GetFeature",
 		"layer", q.Layer,
 		"geoserver_ows", e.owsURL.String())
 
