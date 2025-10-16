@@ -49,6 +49,19 @@ knowledge, been thoroughly tested in the literature.
 This project focuses on combining spatial indexing, caching strategy design, and
 system performance modeling to test and validate this specific architectural approach.
 
+## Repository Structure
+
+* `cmd/`: Main applications (middleware, load generator)
+* `internal/core`: Core components (server, router, executor, etc.)
+* `internal/scenarios`: Different implementations of the interfaces to
+test them against each other (baseline, h3, cache, etc.)
+* `internal/*`: Shared interfaces (cache, mapper, hotness, decision, etc.)
+used by scenarios.
+* `internal/`: Other internal packages (db, cache, geo, etc.)
+* `deploy/`: Docker stuff
+* `scripts/`: Helper scripts (start/stop services, capture stats, etc.)
+* `results/`: Load test output
+
 ## Prerequisites
 
 ### Required
@@ -175,6 +188,14 @@ Nuke docker:
 
 ```bash
 docker kill $(docker ps -q) 2>/dev/null; docker system prune -af --volumes
+```
+
+### Testing
+
+Run all unit tests:
+
+```bash
+go test ./...
 ```
 
 ### Lint
