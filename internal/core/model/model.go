@@ -17,12 +17,14 @@ type Polygon struct {
 	GeoJSON string
 }
 
+// list of h3 cell ids
+type Cells []string
+
 type QueryRequest struct {
 	Layer   string
 	BBox    *BBox
 	Polygon *Polygon
 	Filters string
+	H3Res   int
+	Cells   Cells
 }
-
-// list of h3 cell ids
-type Cells []string

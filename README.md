@@ -57,7 +57,6 @@ system performance modeling to test and validate this specific architectural app
 test them against each other (baseline, h3, cache, etc.)
 * `internal/*`: Shared interfaces (cache, mapper, hotness, decision, etc.)
 used by scenarios.
-* `internal/`: Other internal packages (db, cache, geo, etc.)
 * `deploy/`: Docker stuff
 * `scripts/`: Helper scripts (start/stop services, capture stats, etc.)
 * `results/`: Load test output
@@ -123,7 +122,7 @@ You can run the app either locally or inside the docker container.
 
 ```bash
 set -o allexport; . deploy/compose/.env; set +o allexport
-go run ./cmd/middleware
+LOG_LEVEL=debug go run ./cmd/middleware
 ```
 
 #### Inside Docker
@@ -171,6 +170,20 @@ Optionally, you can capture container cpu/memory stats during the load test:
 ```
 
 The load test results will be saved in the `results/` directory.
+
+### Test Queries
+
+You can test both BBOX and Polygon requests through the middleware:
+
+```bash
+# BBOX request
+curl "http://localhost:8090/query?layer=demo:places&bbox=11,55,12,56,EPSG:4326"
+
+# Polygon request
+curl -G "http://localhost:8090/query" \
+  --data-urlencode 'layer=demo:places' \
+  --data-urlencode 'polygon={"type":"Polygon","coordinates":[[[11,55],[12,55],[12,56],[11,56],[11,55]]]}'
+```
 
 ### Stop the Services
 
