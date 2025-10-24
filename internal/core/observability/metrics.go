@@ -14,6 +14,7 @@ func init() {
 	scenarioLabel.Store("baseline")
 }
 
+// update the scenario label used in metrics
 func SetScenario(s string) {
 	if s == "" {
 		s = "baseline"
@@ -31,6 +32,14 @@ func getScenario() string {
 }
 
 var (
+	decisionRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "decision_requests_total",
+			Help: "Number of cache decisions by outcome.",
+		},
+		[]string{"outcome", "scenario"},
+	)
+
 	httpRequestsTotal = promauto.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
@@ -108,4 +117,12 @@ func ExposeBuildInfo(version string) {
 		version = "dev"
 	}
 	buildInfo.WithLabelValues(version).Set(1)
+}
+
+func IncDecision(outcome string) {
+	s := getScenario()
+	if outcome != "cache" && outcome != "nocache" {
+		outcome = "nocache"
+	}
+	decisionRequestsTotal.WithLabelValues(outcome, s).Inc()
 }

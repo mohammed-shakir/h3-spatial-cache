@@ -16,6 +16,20 @@ type Engine struct {
 
 var _ decision.Interface = (*Engine)(nil)
 
+func New(h hotness.Interface, threshold float64, baseRes, minRes, maxRes int, mapper *h3mapper.Mapper) *Engine {
+	if mapper == nil {
+		mapper = h3mapper.New()
+	}
+	return &Engine{
+		Hot:       h,
+		Threshold: threshold,
+		BaseRes:   baseRes,
+		MinRes:    minRes,
+		MaxRes:    maxRes,
+		Mapper:    mapper,
+	}
+}
+
 // returns true if any cell's current score reaches the threshold
 func (e *Engine) ShouldCache(cells []string) bool {
 	if len(cells) == 0 || e.Hot == nil {
