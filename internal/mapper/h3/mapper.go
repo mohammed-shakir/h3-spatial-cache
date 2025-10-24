@@ -19,7 +19,7 @@ func (m *Mapper) CellsForBBox(bb model.BBox, res int) (model.Cells, error) {
 	if err := validateRes(res); err != nil {
 		return nil, err
 	}
-	// Build a rectangular loop (lon,lat in EPSG:4326). v4 wants degrees.
+	// convert bbox to rectangular GeoLoop for H3 polyfill
 	outer := h3.GeoLoop{
 		{Lat: bb.Y1, Lng: bb.X1},
 		{Lat: bb.Y1, Lng: bb.X2},
@@ -45,7 +45,7 @@ func (m *Mapper) CellsForPolygon(poly model.Polygon, res int) (model.Cells, erro
 	case "Polygon":
 		var tmp struct {
 			Type        string        `json:"type"`
-			Coordinates [][][]float64 `json:"coordinates"` // [ring][i][lon,lat]
+			Coordinates [][][]float64 `json:"coordinates"`
 		}
 		if err := json.Unmarshal([]byte(poly.GeoJSON), &tmp); err != nil {
 			return nil, fmt.Errorf("parse polygon coords: %w", err)
@@ -57,6 +57,7 @@ func (m *Mapper) CellsForPolygon(poly model.Polygon, res int) (model.Cells, erro
 		if len(outer) < 4 {
 			return nil, errors.New("outer ring has < 4 vertices")
 		}
+		// handle inner rings (holes) if any
 		var holes []h3.GeoLoop
 		for i := 1; i < len(tmp.Coordinates); i++ {
 			h := toLoop(tmp.Coordinates[i])
@@ -70,7 +71,7 @@ func (m *Mapper) CellsForPolygon(poly model.Polygon, res int) (model.Cells, erro
 	case "MultiPolygon":
 		var tmp struct {
 			Type        string          `json:"type"`
-			Coordinates [][][][]float64 `json:"coordinates"` // [poly][ring][i][lon,lat]
+			Coordinates [][][][]float64 `json:"coordinates"`
 		}
 		if err := json.Unmarshal([]byte(poly.GeoJSON), &tmp); err != nil {
 			return nil, fmt.Errorf("parse multipolygon coords: %w", err)
@@ -96,6 +97,7 @@ func (m *Mapper) CellsForPolygon(poly model.Polygon, res int) (model.Cells, erro
 				}
 				holes = append(holes, h)
 			}
+			// deduplicate overlapping cells across multipolygon parts
 			cells, err := polyfillOne(outer, holes, res)
 			if err != nil {
 				return nil, err
@@ -115,8 +117,6 @@ func (m *Mapper) CellsForPolygon(poly model.Polygon, res int) (model.Cells, erro
 	}
 }
 
-// --- helpers ---
-
 func validateRes(res int) error {
 	if res < 0 || res > 15 {
 		return fmt.Errorf("invalid H3 resolution %d (must be 0..15)", res)
@@ -124,8 +124,6 @@ func validateRes(res int) error {
 	return nil
 }
 
-// Convert a GeoJSON ring [[lon,lat], ...] to an h3.GeoLoop (in degrees).
-// If the ring is explicitly closed (last == first), drop the trailing duplicate.
 func toLoop(coords [][]float64) h3.GeoLoop {
 	loop := make(h3.GeoLoop, 0, len(coords))
 	for _, xy := range coords {
@@ -134,7 +132,7 @@ func toLoop(coords [][]float64) h3.GeoLoop {
 		}
 		loop = append(loop, h3.LatLng{Lat: xy[1], Lng: xy[0]})
 	}
-	// drop duplicated closing vertex if present
+	// remove duplicated last point if present
 	if len(loop) >= 2 {
 		last := loop[len(loop)-1]
 		first := loop[0]
@@ -145,7 +143,6 @@ func toLoop(coords [][]float64) h3.GeoLoop {
 	return loop
 }
 
-// polyfillOne computes unique cells and returns them sorted for determinism.
 func polyfillOne(outer h3.GeoLoop, holes []h3.GeoLoop, res int) (model.Cells, error) {
 	if len(outer) < 4 {
 		return nil, errors.New("outer ring has < 4 vertices")
@@ -155,7 +152,6 @@ func polyfillOne(outer h3.GeoLoop, holes []h3.GeoLoop, res int) (model.Cells, er
 		Holes:   holes,
 	}
 
-	// v4 returns ([]h3.Cell, error)
 	indexes, err := h3.PolygonToCells(poly, res)
 	if err != nil {
 		return nil, fmt.Errorf("h3 polyfill: %w", err)
@@ -164,13 +160,14 @@ func polyfillOne(outer h3.GeoLoop, holes []h3.GeoLoop, res int) (model.Cells, er
 	out := make([]string, 0, len(indexes))
 	seen := make(map[string]struct{}, len(indexes))
 	for _, idx := range indexes {
-		s := idx.String() // v4 Cell has String()
+		s := idx.String()
 		if _, ok := seen[s]; ok {
 			continue
 		}
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
+	// return sorted cell ids
 	sort.Strings(out)
 	return out, nil
 }

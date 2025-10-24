@@ -20,9 +20,9 @@ type fakeExec struct {
 	lastParams  url.Values
 }
 
+// records the last query request and writes a 204 No Content response
 func (f *fakeExec) ForwardWFS(_ context.Context, w http.ResponseWriter, _ *http.Request, q model.QueryRequest) {
 	f.lastQ = q
-	// What will be forwarded upstream (unchanged by H3 fields).
 	f.lastParams = ogc.BuildGetFeatureParams(q)
 	f.wroteStatus = http.StatusNoContent
 	w.WriteHeader(f.wroteStatus)
@@ -56,7 +56,6 @@ func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 		t.Fatalf("newBaseline: %v", err)
 	}
 
-	// Input with BBOX only.
 	inQ := model.QueryRequest{
 		Layer: "demo:places",
 		BBox:  &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
@@ -68,6 +67,7 @@ func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 
 	e.HandleQuery(context.Background(), rr, req, inQ)
 
+	// confirm h3 metadata was added
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("status=%d want 204", rr.Code)
 	}
@@ -77,7 +77,6 @@ func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 	if len(fx.lastQ.Cells) == 0 {
 		t.Fatalf("expected non-empty Cells for bbox")
 	}
-	// Upstream transparency: params identical to pre-change behavior.
 	if !equalValues(fx.lastParams, wantParams) {
 		t.Fatalf("upstream params changed unexpectedly.\n got: %s\nwant: %s", fx.lastParams.Encode(), wantParams.Encode())
 	}
@@ -115,8 +114,6 @@ func TestBaseline_H3ContextForPolygon_IsPopulated_AndTransparent(t *testing.T) {
 	if len(fx.lastQ.Cells) == 0 {
 		t.Fatalf("expected non-empty Cells for polygon")
 	}
-	// Upstream transparency: the cql_filter/bbox set is identical to what ogc.BuildGetFeatureParams
-	// would have produced before adding H3 context.
 	if !equalValues(fx.lastParams, wantParams) {
 		t.Fatalf("upstream params changed unexpectedly.\n got: %s\nwant: %s", fx.lastParams.Encode(), wantParams.Encode())
 	}

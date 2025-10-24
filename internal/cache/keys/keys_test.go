@@ -20,6 +20,7 @@ func TestNormalization_SpacingVariantsProduceSameKey(t *testing.T) {
 	fB := "name='Stockholm' AND type IN ( 'city' , 'town' )"
 	k1 := Key(" demo:places ", 8, "892a100d2b3ffff", fA)
 	k2 := Key("demo:places", 8, "892a100d2b3ffff", fB)
+	// remove surrounding spaces for comparison
 	if k1 != k2 {
 		t.Fatalf("normalized keys differ:\n k1=%s\n k2=%s", k1, k2)
 	}
@@ -42,12 +43,14 @@ func TestUnicodeSafety_NoPanicAndHashSuffixPresent(t *testing.T) {
 	f := "name = 'Göteborg' AND note = '雪'"
 	k := Key("demo:places", 8, "892a100d2b3ffff", f)
 
+	// check for non-ASCII
 	for _, r := range k {
 		if r > unicode.MaxASCII {
 			t.Fatalf("non-ASCII rune leaked into key: %q in %s", r, k)
 		}
 	}
 
+	// check for hash suffix
 	m := regexp.MustCompile(`:f=([0-9a-f]{16})$`).FindStringSubmatch(k)
 	if len(m) != 2 {
 		t.Fatalf("missing or invalid :f=<hex64> suffix in key: %s", k)

@@ -31,11 +31,10 @@ func TestPolygon_SubsetOfBBoxAndDeterministic(t *testing.T) {
 	m := New()
 	bb := model.BBox{X1: 17.95, Y1: 59.30, X2: 18.15, Y2: 59.40, SRID: "EPSG:4326"}
 
-	// Smaller polygon inside the bbox; at a moderately fine res we should see fewer/equal cells than bbox.
 	polyJSON := `{"type":"Polygon","coordinates":[[
 		[18.00,59.32],[18.12,59.32],[18.12,59.38],[18.00,59.38],[18.00,59.32]
 	]]}`
-	res := 9 // slightly finer to reduce the chance polygon == bbox coverage
+	res := 9
 	cp, err := m.CellsForPolygon(model.Polygon{GeoJSON: polyJSON}, res)
 	if err != nil {
 		t.Fatalf("polygon: %v", err)
@@ -44,13 +43,13 @@ func TestPolygon_SubsetOfBBoxAndDeterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bbox: %v", err)
 	}
+	// polygon should be subset of bbox
 	if len(cp) == 0 {
 		t.Fatalf("expected non-empty polygon coverage")
 	}
 	if !sort.StringsAreSorted([]string(cp)) || hasDups(cp) {
 		t.Fatalf("polygon cells must be sorted + unique")
 	}
-	// Deterministic repeated call
 	cp2, err := m.CellsForPolygon(model.Polygon{GeoJSON: polyJSON}, res)
 	if err != nil {
 		t.Fatalf("polygon second call: %v", err)
@@ -58,7 +57,6 @@ func TestPolygon_SubsetOfBBoxAndDeterministic(t *testing.T) {
 	if !reflect.DeepEqual(cp, cp2) {
 		t.Fatalf("expected identical output for identical input")
 	}
-	// Polygon should be subset-of-or-equal to bbox coverage
 	if len(cp) > len(cb) {
 		t.Fatalf("polygon coverage larger than bbox coverage (unexpected)")
 	}
@@ -68,6 +66,7 @@ func TestBounds_InvalidResolutionAndDegeneratePolygon(t *testing.T) {
 	m := New()
 	bb := model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"}
 
+	// resolution bounds check
 	if _, err := m.CellsForBBox(bb, -1); err == nil {
 		t.Fatalf("expected error for res=-1")
 	}
@@ -75,7 +74,7 @@ func TestBounds_InvalidResolutionAndDegeneratePolygon(t *testing.T) {
 		t.Fatalf("expected error for res=16")
 	}
 
-	// Degenerate polygon (empty ring)
+	// invalid polygon with no coordinates
 	p := model.Polygon{GeoJSON: `{"type":"Polygon","coordinates":[[]]}`}
 	if _, err := m.CellsForPolygon(p, 8); err == nil {
 		t.Fatalf("expected error for degenerate polygon")

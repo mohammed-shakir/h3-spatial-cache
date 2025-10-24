@@ -9,6 +9,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 )
 
+// generate a cache key for the given parameters
 func Key(layer string, res int, cell, filters string) string {
 	layerNorm := sanitizeLayer(strings.TrimSpace(layer))
 	filterText := normalizeFilters(filters)
@@ -24,12 +25,12 @@ func Key(layer string, res int, cell, filters string) string {
 	return fmt.Sprintf("%s:%d:%s:filters=%s:f=%016x", layerNorm, res, cell, filterSafe, sum)
 }
 
+// normalize spacing around operators
 func normalizeFilters(s string) string {
 	if s == "" {
 		return ""
 	}
 	s = collapseASCIIWhitespace(strings.TrimSpace(s))
-	// Remove spaces around these punctuation tokens.
 	re := regexp.MustCompile(`\s*([=<>!\.,\(\)])\s*`)
 	return re.ReplaceAllString(s, "$1")
 }
@@ -50,7 +51,6 @@ func sanitizeForKey(s string) string {
 		case isAlphaNum(r) || r == ':' || r == '_' || r == '-' || r == '=':
 			out = r
 		default:
-			// Any other rune (including non-ASCII) becomes '-'
 			out = '-'
 		}
 		if (out == '_' || out == '-') && out == prev {
@@ -88,7 +88,6 @@ func sanitizeLayer(s string) string {
 	return b.String()
 }
 
-// converts any run of ASCII whitespace to a single space.
 func collapseASCIIWhitespace(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

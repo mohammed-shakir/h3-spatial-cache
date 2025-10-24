@@ -29,6 +29,7 @@ func (m *Mapper) ToParent(cell string, parentRes int) (string, error) {
 		return cell, nil
 	}
 
+	// traverse up to the requested parent resolution
 	p, err := c.Parent(parentRes)
 	if err != nil {
 		return "", fmt.Errorf("h3 parent: %w", err)
@@ -71,6 +72,7 @@ func (m *Mapper) ToChildren(cell string, childRes int) (model.Cells, error) {
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
+	// return sorted children
 	sort.Strings(out)
 	return out, nil
 }

@@ -44,6 +44,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		cells, err = e.mapr.CellsForBBox(*q.BBox, e.res)
 	}
 
+	// log outcome of h3 mapping
 	if err != nil {
 		e.logger.Debug("h3 mapping failed", "err", err)
 	} else if len(cells) > 0 {
@@ -56,5 +57,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	q.H3Res = e.res
 	q.Cells = cells
 
+	// forward to executor
 	e.exec.ForwardWFS(ctx, w, r, q)
 }
