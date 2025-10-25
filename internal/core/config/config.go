@@ -7,17 +7,18 @@ import (
 )
 
 type Config struct {
-	Addr         string
-	LogLevel     string
-	GeoServerURL string
-	RedisAddr    string
-	KafkaBrokers string
-	H3Res        int
-	Scenario     string
-	HotThreshold float64
-	HotHalfLife  time.Duration
-	H3ResMin     int
-	H3ResMax     int
+	Addr           string
+	LogLevel       string
+	GeoServerURL   string
+	RedisAddr      string
+	KafkaBrokers   string
+	H3Res          int
+	Scenario       string
+	HotThreshold   float64
+	HotHalfLife    time.Duration
+	H3ResMin       int
+	H3ResMax       int
+	CacheOpTimeout time.Duration
 }
 
 func FromEnv() Config {
@@ -37,18 +38,18 @@ func FromEnv() Config {
 	}
 
 	return Config{
-		Addr:         getenv("ADDR", ":8090"),
-		LogLevel:     getenv("LOG_LEVEL", "info"),
-		GeoServerURL: getenv("GEOSERVER_URL", "http://localhost:8080/geoserver"),
-		RedisAddr:    getenv("REDIS_ADDR", "localhost:6379"),
-		KafkaBrokers: getenv("KAFKA_BROKERS", "localhost:9092"),
-		H3Res:        res,
-		Scenario:     getenv("SCENARIO", "baseline"),
-
-		HotThreshold: getfloat("HOT_THRESHOLD", 10.0),
-		HotHalfLife:  getduration("HOT_HALF_LIFE", time.Minute),
-		H3ResMin:     minRes,
-		H3ResMax:     maxRes,
+		Addr:           getenv("ADDR", ":8090"),
+		LogLevel:       getenv("LOG_LEVEL", "info"),
+		GeoServerURL:   getenv("GEOSERVER_URL", "http://localhost:8080/geoserver"),
+		RedisAddr:      getenv("REDIS_ADDR", "localhost:6379"),
+		KafkaBrokers:   getenv("KAFKA_BROKERS", "localhost:9092"),
+		H3Res:          res,
+		Scenario:       getenv("SCENARIO", "baseline"),
+		HotThreshold:   getfloat("HOT_THRESHOLD", 10.0),
+		HotHalfLife:    getduration("HOT_HALF_LIFE", time.Minute),
+		H3ResMin:       minRes,
+		H3ResMax:       maxRes,
+		CacheOpTimeout: getduration("CACHE_OP_TIMEOUT", 250*time.Millisecond),
 	}
 }
 

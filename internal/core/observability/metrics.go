@@ -1,6 +1,8 @@
 package observability
 
 import (
+	"context"
+	"errors"
 	"strconv"
 	"sync/atomic"
 
@@ -82,6 +84,23 @@ var (
 		},
 		[]string{"outcome", "scenario"},
 	)
+
+	cacheOpTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cache_op_total",
+			Help: "Count of cache operations by op and outcome.",
+		},
+		[]string{"op", "outcome", "scenario"},
+	)
+
+	cacheOpSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "cache_op_seconds",
+			Help:    "Latency of cache operations in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms .. ~8s
+		},
+		[]string{"op", "scenario"},
+	)
 )
 
 func ObserveHTTP(method, route string, status int, durationSeconds float64) {
@@ -125,4 +144,24 @@ func IncDecision(outcome string) {
 		outcome = "nocache"
 	}
 	decisionRequestsTotal.WithLabelValues(outcome, s).Inc()
+}
+
+func ObserveCacheOp(op string, err error, durationSeconds float64) {
+	if op == "" {
+		op = "unknown"
+	}
+	s := getScenario()
+	outcome := "ok"
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			outcome = "timeout"
+		case errors.Is(err, context.Canceled):
+			outcome = "canceled"
+		default:
+			outcome = "error"
+		}
+	}
+	cacheOpTotal.WithLabelValues(op, outcome, s).Inc()
+	cacheOpSeconds.WithLabelValues(op, s).Observe(durationSeconds)
 }
