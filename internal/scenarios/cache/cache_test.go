@@ -27,7 +27,8 @@ type gsDouble struct {
 	calls       int64
 	inflight    int64
 	maxInflight int64
-	slow        time.Duration
+	started     chan struct{}
+	release     chan struct{}
 }
 
 // simulates geoserver, tracks calls and concurrency
@@ -40,12 +41,25 @@ func (g *gsDouble) handler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	time.Sleep(g.slow)
+
+	if g.started != nil {
+		select {
+		case g.started <- struct{}{}:
+		default:
+		}
+	}
+
+	if g.release != nil {
+		<-g.release
+	}
+
 	q := r.URL.Query()
 	if !strings.Contains(q.Get("cql_filter"), "INTERSECTS(") {
 		http.Error(w, "missing INTERSECTS", http.StatusBadRequest)
+		atomic.AddInt64(&g.inflight, -1)
 		return
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = io.WriteString(w, `{"type":"FeatureCollection","features":[{"type":"Feature","geometry":null,"properties":{"ok":true}}]}`)
 	atomic.AddInt64(&g.inflight, -1)
@@ -68,9 +82,9 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	cfg.RedisAddr = mr.Addr()
 	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
 	cfg.CacheTTLDefault = 30 * time.Second
+	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.02, Y2: 59.34, SRID: "EPSG:4326"}
 
 	mapr := h3mapper.New()
-	bb := model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"}
 	cells, err := mapr.CellsForBBox(bb, cfg.H3Res)
 	if err != nil || len(cells) == 0 {
 		t.Fatalf("h3 mapping: %v", err)
@@ -78,7 +92,6 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	for i, c := range cells {
 		k := keys.Key("demo:places", cfg.H3Res, c, "")
 		_ = mr.Set(k, string(fullFeature(c+":"+fmtInt(i))))
-		mr.FastForward(1 * time.Second)
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -115,7 +128,10 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 }
 
 func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
-	gs := &gsDouble{slow: 15 * time.Millisecond}
+	gs := &gsDouble{
+		started: make(chan struct{}, 128),
+		release: make(chan struct{}),
+	}
 	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
 	defer srv.Close()
 
@@ -131,6 +147,7 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	cfg.CacheFillMaxWorkers = 2
 	cfg.CacheFillQueue = 16
 	cfg.CacheOpTimeout = 750 * time.Millisecond
+	cfg.H3Res = 7
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := scenarios.New("cache", cfg, logger, nil)
@@ -139,7 +156,7 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	}
 
 	mapr := h3mapper.New()
-	bb := model.BBox{X1: 17.95, Y1: 59.30, X2: 18.15, Y2: 59.40, SRID: "EPSG:4326"}
+	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.10, Y2: 59.42, SRID: "EPSG:4326"}
 	cells, err := mapr.CellsForBBox(bb, cfg.H3Res)
 	if err != nil {
 		t.Fatalf("h3: %v", err)
@@ -160,7 +177,18 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	req.URL.RawQuery = q.Encode()
 	rr := httptest.NewRecorder()
 
-	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:places", BBox: &bb})
+	done := make(chan struct{})
+	go func() {
+		h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:places", BBox: &bb})
+		close(done)
+	}()
+
+	for range cfg.CacheFillMaxWorkers {
+		<-gs.started
+	}
+	close(gs.release)
+
+	<-done
 
 	wantMisses := len(cells) - len(cells)/2
 	if rr.Code != http.StatusOK {
