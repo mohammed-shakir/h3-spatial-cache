@@ -32,7 +32,7 @@ func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 		Features: make([]json.RawMessage, 0, 128),
 	}
 
-	seen := map[string]struct{}{}
+	seen := map[string]struct{}{} // used for deduplication by id if enabled
 
 	for i, p := range parts {
 		var root map[string]json.RawMessage
@@ -74,6 +74,7 @@ func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 				return nil, fmt.Errorf(`part %d feature %d: type is %q (want "Feature")`, i, j, ftype)
 			}
 
+			// deduplicate by id if enabled
 			if idRaw, ok := fobj["id"]; ok && len(idRaw) > 0 {
 				key, idErr := canonicalIDKey(idRaw)
 				if idErr != nil {
@@ -98,6 +99,7 @@ func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 	return buf, nil
 }
 
+// parse id to allow both string and number types
 func canonicalIDKey(idRaw json.RawMessage) (string, error) {
 	trim := strings.TrimSpace(string(idRaw))
 	if trim == "" {

@@ -16,6 +16,7 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/server"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios"
 	_ "github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios/baseline"
+	_ "github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios/cache"
 )
 
 var Version = "dev"
