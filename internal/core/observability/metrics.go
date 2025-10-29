@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -101,7 +102,39 @@ var (
 		},
 		[]string{"op", "scenario"},
 	)
+	invEvents = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "invalidation_events_total",
+			Help: "Number of invalidation events handled.",
+		},
+		[]string{"result", "op", "layer"},
+	)
+	invDeletedKeys = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "invalidation_deleted_keys_total",
+			Help: "Total number of cache keys deleted by invalidation.",
+		},
+		[]string{"layer"},
+	)
+	invLatency = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "invalidation_process_seconds",
+			Help:    "Time to process a single invalidation event.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms .. ~16s
+		},
+		[]string{"op", "layer"},
+	)
 )
+
+func observe(op, layer string, keys int, dur time.Duration, err error) {
+	if err != nil {
+		invEvents.WithLabelValues("error", op, layer).Inc()
+		return
+	}
+	invEvents.WithLabelValues("ok", op, layer).Inc()
+	invDeletedKeys.WithLabelValues(layer).Add(float64(keys))
+	invLatency.WithLabelValues(op, layer).Observe(dur.Seconds())
+}
 
 func ObserveHTTP(method, route string, status int, durationSeconds float64) {
 	s := getScenario()
@@ -164,4 +197,8 @@ func ObserveCacheOp(op string, err error, durationSeconds float64) {
 	}
 	cacheOpTotal.WithLabelValues(op, outcome, s).Inc()
 	cacheOpSeconds.WithLabelValues(op, s).Observe(durationSeconds)
+}
+
+func ObserveInvalidation(op, layer string, keys int, dur time.Duration, err error) {
+	observe(op, layer, keys, dur, err)
 }

@@ -1,0 +1,67 @@
+{
+	"$id": "https://example.com/schemas/invalidation-event.v1.schema.json",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"title": "Spatial Invalidation Event (v1)",
+	"type": "object",
+	"additionalProperties": false,
+	"required": ["version", "op", "layer", "ts"],
+	"properties": {
+		"version": {
+			"type": "integer",
+			"const": 1,
+			"description": "Schema version."
+		},
+		"op": {
+			"type": "string",
+			"enum": ["insert", "update", "delete"]
+		},
+		"layer": {
+			"type": "string",
+			"minLength": 1
+		},
+		"ts": {
+			"type": "string",
+			"format": "date-time",
+			"description": "RFC3339 UTC timestamp (e.g., 2025-10-26T12:30:45Z)."
+		},
+		"feature_id": {
+			"oneOf": [
+				{ "type": "string", "minLength": 1 },
+				{ "type": "number" },
+				{ "type": "integer" }
+			],
+			"description": "Optional feature identifier."
+		},
+		"source": {
+			"type": "string",
+			"minLength": 1
+		},
+		"bbox": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["x1", "y1", "x2", "y2", "srid"],
+			"properties": {
+				"x1": { "type": "number", "minimum": -180, "maximum": 180 },
+				"y1": { "type": "number", "minimum": -90, "maximum": 90 },
+				"x2": { "type": "number", "minimum": -180, "maximum": 180 },
+				"y2": { "type": "number", "minimum": -90, "maximum": 90 },
+				"srid": { "type": "string", "const": "EPSG:4326" }
+			},
+			"description": "Bounding box (lon/lat degrees, EPSG:4326)."
+		},
+		"geometry": {
+			"type": "object",
+			"additionalProperties": false,
+			"required": ["type", "coordinates"],
+			"properties": {
+				"type": { "type": "string", "enum": ["Polygon", "MultiPolygon"] },
+				"coordinates": { "type": "array" }
+			},
+			"description": "GeoJSON Polygon or MultiPolygon (EPSG:4326)."
+		}
+	},
+	"oneOf": [
+		{ "required": ["bbox"], "not": { "required": ["geometry"] } },
+		{ "required": ["geometry"], "not": { "required": ["bbox"] } }
+	]
+}

@@ -14,6 +14,8 @@ set +a
 # Default values
 : "${GEOSERVER_PORT:=8080}"
 : "${KAFKA_TOPIC:=spatial-updates}"
+: "${KAFKA_PARTITIONS:=6}"
+: "${KAFKA_REPLICATION_FACTOR:=1}"
 : "${POSTGRES_DB:=gis}"
 : "${POSTGRES_USER:=gis}"
 : "${POSTGRES_PASSWORD:=gis}"
@@ -47,8 +49,10 @@ wait_healthy geoserver
 echo "Ensure kafka topic exists: ${KAFKA_TOPIC}"
 docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
 	--bootstrap-server localhost:9092 \
-	--create --if-not-exists --replication-factor 1 --partitions 1 \
-	--topic "${KAFKA_TOPIC}" >/dev/null 2>&1 || true
+	--create --if-not-exists \
+	--topic "${KAFKA_TOPIC}" \
+	--partitions "${KAFKA_PARTITIONS}" \
+	--replication-factor "${KAFKA_REPLICATION_FACTOR}" >/dev/null 2>&1 || true
 
 # Configure geoserver
 GS="http://localhost:${GEOSERVER_PORT}/geoserver"
