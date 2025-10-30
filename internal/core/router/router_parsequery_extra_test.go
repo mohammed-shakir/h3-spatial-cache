@@ -11,7 +11,7 @@ func TestParseQueryRequest_PolygonPrecedence(t *testing.T) {
 	poly := `{"type":"Polygon","coordinates":[[[11,55],[12,55],[12,56],[11,56],[11,55]]]}`
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
 	q := url.Values{}
-	q.Set("layer", "demo:places")
+	q.Set("layer", "demo:NR_polygon")
 	q.Set("bbox", "11,55,12,56,EPSG:4326")
 	q.Set("polygon", poly)
 	req.URL.RawQuery = q.Encode()
@@ -34,7 +34,7 @@ func TestParseQueryRequest_PolygonPrecedence(t *testing.T) {
 func TestParseQueryRequest_InvalidFilters(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
 	q := url.Values{}
-	q.Set("layer", "demo:places")
+	q.Set("layer", "demo:NR_polygon")
 	q.Set("filters", "name = 'x'; DROP TABLE places")
 	req.URL.RawQuery = q.Encode()
 

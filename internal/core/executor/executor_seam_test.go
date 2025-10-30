@@ -75,7 +75,7 @@ func TestExecutor_ForwardWFS_BBox(t *testing.T) {
 	}
 
 	q := model.QueryRequest{
-		Layer: "demo:places",
+		Layer: "demo:NR_polygon",
 		BBox:  &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
 	}
 	wantQuery := ogc.BuildGetFeatureParams(q)
@@ -116,7 +116,7 @@ func TestExecutor_ForwardWFS_PolygonWins(t *testing.T) {
 
 	poly := `{"type":"Polygon","coordinates":[[[11,55],[12,55],[12,56],[11,56],[11,55]]]}`
 	q := model.QueryRequest{
-		Layer:   "demo:places",
+		Layer:   "demo:NR_polygon",
 		BBox:    &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
 		Polygon: &model.Polygon{GeoJSON: poly},
 	}
@@ -141,6 +141,9 @@ func TestExecutor_ForwardWFS_PolygonWins(t *testing.T) {
 	}
 	if got := gotQuery.Get("cql_filter"); got == "" {
 		t.Fatalf("expected cql_filter to be present for polygon case")
+	}
+	if got := gotQuery.Get("cql_filter"); !strings.Contains(got, "SRID=4326;") {
+		t.Fatalf("expected CQL geometry literal to include SRID=4326; got %q", got)
 	}
 	if got := hdr.Get("Accept"); got != "application/json" {
 		t.Fatalf("missing/invalid Accept header: %q", got)

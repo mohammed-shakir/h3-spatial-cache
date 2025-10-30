@@ -90,7 +90,7 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 		t.Fatalf("h3 mapping: %v", err)
 	}
 	for i, c := range cells {
-		k := keys.Key("demo:places", cfg.H3Res, c, "")
+		k := keys.Key("demo:NR_polygon", cfg.H3Res, c, "")
 		_ = mr.Set(k, string(fullFeature(c+":"+fmtInt(i))))
 	}
 
@@ -102,12 +102,12 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
 	q := url.Values{}
-	q.Set("layer", "demo:places")
+	q.Set("layer", "demo:NR_polygon")
 	q.Set("bbox", bb.String())
 	req.URL.RawQuery = q.Encode()
 
 	rr := httptest.NewRecorder()
-	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:places", BBox: &bb})
+	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rr.Code)
@@ -143,7 +143,7 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	cfg.RedisAddr = mr.Addr()
 	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
 	cfg.CacheTTLDefault = 45 * time.Second
-	cfg.CacheTTLOvr = map[string]time.Duration{"demo:places": 2 * time.Minute}
+	cfg.CacheTTLOvr = map[string]time.Duration{"demo:NR_polygon": 2 * time.Minute}
 	cfg.CacheFillMaxWorkers = 2
 	cfg.CacheFillQueue = 16
 	cfg.CacheOpTimeout = 750 * time.Millisecond
@@ -166,20 +166,20 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	}
 
 	for i := range len(cells) / 2 {
-		k := keys.Key("demo:places", cfg.H3Res, cells[i], "")
+		k := keys.Key("demo:NR_polygon", cfg.H3Res, cells[i], "")
 		_ = mr.Set(k, string(fullFeature("hit-"+fmtInt(i))))
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
 	q := url.Values{}
-	q.Set("layer", "demo:places")
+	q.Set("layer", "demo:NR_polygon")
 	q.Set("bbox", bb.String())
 	req.URL.RawQuery = q.Encode()
 	rr := httptest.NewRecorder()
 
 	done := make(chan struct{})
 	go func() {
-		h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:places", BBox: &bb})
+		h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
 		close(done)
 	}()
 
@@ -201,7 +201,7 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 		t.Fatalf("max inflight=%d exceeded workers=%d", gs.maxInflight, cfg.CacheFillMaxWorkers)
 	}
 	for i := len(cells) / 2; i < len(cells); i++ {
-		k := keys.Key("demo:places", cfg.H3Res, cells[i], "")
+		k := keys.Key("demo:NR_polygon", cfg.H3Res, cells[i], "")
 		if !mr.Exists(k) {
 			t.Fatalf("missing cached key: %s", k)
 		}

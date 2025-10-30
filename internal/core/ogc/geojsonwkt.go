@@ -21,13 +21,21 @@ func GeoJSONToWKT(geojson string) (string, error) {
 		if err := json.Unmarshal(v.Coordinates, &rings); err != nil {
 			return "", fmt.Errorf("parse polygon coords: %w", err)
 		}
-		return polygonToWKT(rings)
+		wkt, err := polygonToWKT(rings)
+		if err != nil {
+			return "", err
+		}
+		return "SRID=4326;" + wkt, nil
 	case "MultiPolygon":
 		var polys [][][][]float64
 		if err := json.Unmarshal(v.Coordinates, &polys); err != nil {
 			return "", fmt.Errorf("parse multipolygon coords: %w", err)
 		}
-		return multiPolygonToWKT(polys)
+		wkt, err := multiPolygonToWKT(polys)
+		if err != nil {
+			return "", err
+		}
+		return "SRID=4326;" + wkt, nil
 	default:
 		return "", fmt.Errorf("unsupported type %q", v.Type)
 	}

@@ -184,11 +184,11 @@ You can test both BBOX and Polygon requests through the middleware:
 
 ```bash
 # BBOX request
-curl "http://localhost:8090/query?layer=demo:places&bbox=11,55,12,56,EPSG:4326"
+curl "http://localhost:8090/query?layer=demo:NR_polygon&bbox=11,55,12,56,EPSG:4326"
 
 # Polygon request
 curl -G "http://localhost:8090/query" \
-  --data-urlencode 'layer=demo:places' \
+  --data-urlencode 'layer=demo:NR_polygon' \
   --data-urlencode 'polygon={"type":"Polygon","coordinates":[[[11,55],[12,55],[12,56],[11,56],[11,55]]]}'
 ```
 

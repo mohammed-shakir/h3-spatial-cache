@@ -31,7 +31,7 @@ func TestHandleQuery_SeamDispatch(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
 	q := url.Values{}
-	q.Set("layer", "demo:places")
+	q.Set("layer", "demo:NR_polygon")
 	q.Set("bbox", "11.0,55.0,12.0,56.0,EPSG:4326")
 	req.URL.RawQuery = q.Encode()
 
@@ -41,7 +41,7 @@ func TestHandleQuery_SeamDispatch(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("expected 204 from fake handler, got %d", rr.Code)
 	}
-	if h.lastQ.Layer != "demo:places" || h.lastQ.BBox == nil {
+	if h.lastQ.Layer != "demo:NR_polygon" || h.lastQ.BBox == nil {
 		t.Fatalf("handler did not receive parsed query correctly: %+v", h.lastQ)
 	}
 }

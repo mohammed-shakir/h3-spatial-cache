@@ -97,7 +97,7 @@ func TestBaseline_Decision_DoesNotAlterParams_AndLogsShouldCache(t *testing.T) {
 	}
 
 	inQ := model.QueryRequest{
-		Layer: "demo:places",
+		Layer: "demo:NR_polygon",
 		BBox:  &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
 	}
 	wantParams := ogc.BuildGetFeatureParams(inQ)

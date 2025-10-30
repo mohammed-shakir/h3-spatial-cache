@@ -57,7 +57,7 @@ func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 	}
 
 	inQ := model.QueryRequest{
-		Layer: "demo:places",
+		Layer: "demo:NR_polygon",
 		BBox:  &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
 	}
 	wantParams := ogc.BuildGetFeatureParams(inQ)
@@ -94,7 +94,7 @@ func TestBaseline_H3ContextForPolygon_IsPopulated_AndTransparent(t *testing.T) {
 
 	poly := `{"type":"Polygon","coordinates":[[[11,55],[12,55],[12,56],[11,56],[11,55]]]}`
 	inQ := model.QueryRequest{
-		Layer:   "demo:places",
+		Layer:   "demo:NR_polygon",
 		Polygon: &model.Polygon{GeoJSON: poly},
 		Filters: "name <> ''",
 	}

@@ -54,7 +54,7 @@ func TestIntegration_Miniredis_DeleteAndMetrics(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
-	layer, res := "demo:places", 8
+	layer, res := "demo:NR_polygon", 8
 	k1 := keys.Key(layer, res, "892a100d2b3ffff", "")
 	k2 := keys.Key(layer, res, "892a100d2b7ffff", "")
 	_ = mr.Set(k1, `{"type":"FeatureCollection","features":[]}`)

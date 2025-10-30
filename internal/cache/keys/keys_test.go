@@ -8,8 +8,8 @@ import (
 )
 
 func TestDeterminism_SameInputsSameKey(t *testing.T) {
-	k1 := Key("demo:places", 8, "892a100d2b3ffff", "name='Stockholm' AND type IN('city','town')")
-	k2 := Key("demo:places", 8, "892a100d2b3ffff", "name='Stockholm' AND type IN('city','town')")
+	k1 := Key("demo:NR_polygon", 8, "892a100d2b3ffff", "name='Stockholm' AND type IN('city','town')")
+	k2 := Key("demo:NR_polygon", 8, "892a100d2b3ffff", "name='Stockholm' AND type IN('city','town')")
 	if k1 != k2 {
 		t.Fatalf("determinism failed:\n k1=%s\n k2=%s", k1, k2)
 	}
@@ -18,8 +18,8 @@ func TestDeterminism_SameInputsSameKey(t *testing.T) {
 func TestNormalization_SpacingVariantsProduceSameKey(t *testing.T) {
 	fA := "  name  =    'Stockholm'   AND  type IN('city','town')  "
 	fB := "name='Stockholm' AND type IN ( 'city' , 'town' )"
-	k1 := Key(" demo:places ", 8, "892a100d2b3ffff", fA)
-	k2 := Key("demo:places", 8, "892a100d2b3ffff", fB)
+	k1 := Key(" demo:NR_polygon ", 8, "892a100d2b3ffff", fA)
+	k2 := Key("demo:NR_polygon", 8, "892a100d2b3ffff", fB)
 	// remove surrounding spaces for comparison
 	if k1 != k2 {
 		t.Fatalf("normalized keys differ:\n k1=%s\n k2=%s", k1, k2)
@@ -32,8 +32,8 @@ func TestNormalization_SpacingVariantsProduceSameKey(t *testing.T) {
 func TestDifference_DifferentFiltersAreDifferent(t *testing.T) {
 	f1 := "a=1 AND b=2"
 	f2 := "b=2 AND a=1"
-	k1 := Key("demo:places", 8, "892a100d2b3ffff", f1)
-	k2 := Key("demo:places", 8, "892a100d2b3ffff", f2)
+	k1 := Key("demo:NR_polygon", 8, "892a100d2b3ffff", f1)
+	k2 := Key("demo:NR_polygon", 8, "892a100d2b3ffff", f2)
 	if k1 == k2 {
 		t.Fatalf("different filters must produce different keys")
 	}
@@ -41,7 +41,7 @@ func TestDifference_DifferentFiltersAreDifferent(t *testing.T) {
 
 func TestUnicodeSafety_NoPanicAndHashSuffixPresent(t *testing.T) {
 	f := "name = 'Göteborg' AND note = '雪'"
-	k := Key("demo:places", 8, "892a100d2b3ffff", f)
+	k := Key("demo:NR_polygon", 8, "892a100d2b3ffff", f)
 
 	// check for non-ASCII
 	for _, r := range k {

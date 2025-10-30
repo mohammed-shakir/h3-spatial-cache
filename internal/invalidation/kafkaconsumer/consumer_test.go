@@ -90,7 +90,7 @@ func (c *claim) Messages() <-chan *sarama.ConsumerMessage { return c.msgs }
 
 func eventBytesBBox() []byte {
 	ev := invalidation.Event{
-		Version: 1, Op: "update", Layer: "demo:places", TS: time.Now().UTC(),
+		Version: 1, Op: "update", Layer: "demo:NR_polygon", TS: time.Now().UTC(),
 		BBox: &invalidation.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
 	}
 	b, _ := json.Marshal(ev)
