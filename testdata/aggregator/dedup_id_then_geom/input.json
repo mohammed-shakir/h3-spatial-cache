@@ -1,0 +1,47 @@
+{
+	"query": {
+		"sort": [{ "property": "name", "direction": "asc", "typeHint": "string" }],
+		"startIndex": 0,
+		"limit": 0
+	},
+	"shards": [
+		{
+			"meta": { "fromCache": true, "id": "cell-0" },
+			"features": [
+				{
+					"type": "Feature",
+					"geometry": {
+						"type": "Point",
+						"coordinates": [1.0000001, 1.0000001]
+					},
+					"properties": { "name": "geomA1" }
+				},
+				{
+					"type": "Feature",
+					"id": "A",
+					"geometry": { "type": "Point", "coordinates": [0, 0] },
+					"properties": { "name": "one" }
+				}
+			]
+		},
+		{
+			"meta": { "fromCache": false, "id": "cell-1" },
+			"features": [
+				{
+					"type": "Feature",
+					"id": "A",
+					"geometry": { "type": "Point", "coordinates": [0, 0] },
+					"properties": { "name": "one-dup-other-cell" }
+				},
+				{
+					"type": "Feature",
+					"geometry": {
+						"type": "Point",
+						"coordinates": [1.00000009, 1.00000009]
+					},
+					"properties": { "name": "geomA2" }
+				}
+			]
+		}
+	]
+}

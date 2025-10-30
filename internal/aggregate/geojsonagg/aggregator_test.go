@@ -6,7 +6,6 @@ import (
 	"testing"
 )
 
-// builds a FeatureCollection json from the json strings
 func mustFC(features ...string) []byte {
 	s := `{"type":"FeatureCollection","features":[` + join(features) + `]}`
 	return []byte(s)
@@ -23,7 +22,6 @@ func join(xs []string) string {
 	return out
 }
 
-// generates a simple feature object with optional id and name
 func feat(idJSON, name string) string {
 	idPart := ""
 	if idJSON != "" {
@@ -189,7 +187,7 @@ func TestMerge_DedupByID_OptionalBehavior(t *testing.T) {
 }
 
 func TestMerge_NoDedupForFeaturesWithoutID(t *testing.T) {
-	agg := New(true)
+	agg := New(false)
 
 	p1 := mustFC(feat("", "x"))
 	p2 := mustFC(feat("", "x-dup"))

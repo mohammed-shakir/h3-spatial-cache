@@ -1,0 +1,7 @@
+{
+	"query": { "sort": [], "startIndex": 0, "limit": 0 },
+	"shards": [
+		{ "meta": { "fromCache": false, "id": "c0" }, "features": [] },
+		{ "meta": { "fromCache": false, "id": "c1" }, "features": [] }
+	]
+}

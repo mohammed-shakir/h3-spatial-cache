@@ -1,10 +1,12 @@
 package geojsonagg
 
 import (
+	"encoding/json"
 	"fmt"
 	"testing"
 )
 
+// creates a FeatureCollection with n features
 func fcWithN(n int, prefix string, withIDs bool) []byte {
 	j := `{"type":"FeatureCollection","features":[`
 	for i := range n {
@@ -29,6 +31,7 @@ func makeParts(parts, featsPerPart int, withIDs bool) [][]byte {
 	return out
 }
 
+// benchmarks merging parts with given number of features each
 func benchMerge(b *testing.B, parts, featsPerPart int, dedup bool) {
 	agg := New(dedup)
 	in := makeParts(parts, featsPerPart, true)
@@ -54,5 +57,29 @@ func BenchmarkMerge_Medium(b *testing.B) {
 		b.Run(fmt.Sprintf("parts=%d_feats=64", parts), func(b *testing.B) {
 			benchMerge(b, parts, 64, true)
 		})
+	}
+}
+
+func BenchmarkMergeRequest_KWay(b *testing.B) {
+	agg := NewAdvanced()
+	K := 8
+	N := 512
+	req := Request{Query: Query{
+		Sort:  []SortKey{{Property: "rank", Direction: Asc}},
+		Limit: 0, StartIndex: 0,
+	}}
+	req.Shards = make([]ShardPage, K)
+	for k := range K {
+		req.Shards[k] = ShardPage{Meta: ShardMeta{FromCache: true, ID: fmt.Sprintf("s%d", k)}}
+		for i := range N {
+			feat := fmt.Sprintf(`{"type":"Feature","id":"%d-%d","geometry":null,"properties":{"rank":%d,"name":"%d-%d"}}`, k, i, k*N+i, k, i)
+			req.Shards[k].Features = append(req.Shards[k].Features, json.RawMessage(feat))
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, _, err := agg.MergeRequest(req); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

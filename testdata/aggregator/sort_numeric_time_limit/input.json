@@ -1,0 +1,68 @@
+{
+	"query": {
+		"sort": [
+			{
+				"property": "score",
+				"direction": "asc",
+				"typeHint": "number",
+				"nulls": "last"
+			},
+			{
+				"property": "ts",
+				"direction": "asc",
+				"typeHint": "time",
+				"nulls": "last"
+			}
+		],
+		"startIndex": 1,
+		"limit": 3
+	},
+	"shards": [
+		{
+			"meta": { "fromCache": true, "id": "cell-10" },
+			"features": [
+				{
+					"type": "Feature",
+					"geometry": { "type": "Point", "coordinates": [10, 10] },
+					"properties": {
+						"name": "a",
+						"score": 1,
+						"ts": "2020-01-01T00:00:00Z"
+					}
+				},
+				{
+					"type": "Feature",
+					"geometry": { "type": "Point", "coordinates": [10, 11] },
+					"properties": {
+						"name": "b",
+						"score": 2,
+						"ts": "2020-01-01T00:00:00Z"
+					}
+				}
+			]
+		},
+		{
+			"meta": { "fromCache": false, "id": "cell-11" },
+			"features": [
+				{
+					"type": "Feature",
+					"geometry": { "type": "Point", "coordinates": [11, 10] },
+					"properties": {
+						"name": "c",
+						"score": 1,
+						"ts": "2020-01-02T00:00:00Z"
+					}
+				},
+				{
+					"type": "Feature",
+					"geometry": { "type": "Point", "coordinates": [11, 11] },
+					"properties": {
+						"name": "d",
+						"score": 3,
+						"ts": "2020-01-01T00:00:00Z"
+					}
+				}
+			]
+		}
+	]
+}
