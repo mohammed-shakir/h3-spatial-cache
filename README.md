@@ -99,6 +99,11 @@ Create the `results/` directory to store load test results:
 mkdir -p results
 ```
 
+#### Database Seed
+
+The dataset (`scripts/seed/10-metria.sql`) is **not included** in this repository.
+Make sure you have that file in place before starting the services.
+
 ### Start the Services
 
 To start the services, you can use the provided scripts or run the commands
@@ -147,14 +152,16 @@ Then run the load generator:
 
 ```bash
 go run ./cmd/baseline-loadgen \
--target http://localhost:8090/query \
--layer demo:places \
--concurrency 32 \
--duration 60s \
--zipf-s 1.3 -zipf-v 1.0 \
--bboxes 128 \
--out results/baseline \
--append-ts=true -ts-format=iso
+  -target http://localhost:8090/query \
+  -layer demo:NR_polygon \
+  -concurrency 32 \
+  -duration 10s \
+  -zipf-s 1.3 \
+  -zipf-v 1.0 \
+  -bboxes 128 \
+  -out results/baseline \
+  -append-ts=true \
+  -ts-format=iso
 ```
 
 or use default parameters:

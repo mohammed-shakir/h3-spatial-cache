@@ -19,6 +19,9 @@ set +a
 : "${POSTGRES_DB:=gis}"
 : "${POSTGRES_USER:=gis}"
 : "${POSTGRES_PASSWORD:=gis}"
+: "${WS:=demo}"
+: "${STORE:=pg}"
+: "${PG_SCHEMA:=shakir}"
 
 echo "Docker compose up"
 docker compose up -d --build
@@ -58,40 +61,78 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-topics.sh \
 GS="http://localhost:${GEOSERVER_PORT}/geoserver"
 BASIC_AUTH="admin:geoserver"
 
-echo "Create workspace demo"
-curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
-	-d '{"workspace":{"name":"demo"}}' \
-	"$GS/rest/workspaces" || true
+if ! curl -fs -u "$BASIC_AUTH" "$GS/rest/workspaces/${WS}.json" >/dev/null; then
+	echo "Create workspace ${WS}"
+	curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
+		-d "{\"workspace\":{\"name\":\"${WS}\"}}" \
+		"$GS/rest/workspaces"
+else
+	echo "Workspace ${WS} already exists"
+fi
 
-echo "Create PostGIS store pg in workspace demo"
-curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
-	-d @- "$GS/rest/workspaces/demo/datastores" <<JSON || true
+DS_PAYLOAD=$(
+	cat <<JSON
 {
   "dataStore": {
-    "name": "pg",
+    "name": "${STORE}",
+    "enabled": true,
     "connectionParameters": {
-      "host": "postgis",
-      "port": "5432",
-      "database": "${POSTGRES_DB}",
-      "user": "${POSTGRES_USER}",
-      "passwd": "${POSTGRES_PASSWORD}",
-      "dbtype": "postgis",
-      "schema": "public"
+      "entry": [
+        {"@key":"host","$":"postgis"},
+        {"@key":"port","$":"5432"},
+        {"@key":"database","$":"${POSTGRES_DB}"},
+        {"@key":"schema","$":"${PG_SCHEMA}"},
+        {"@key":"user","$":"${POSTGRES_USER}"},
+        {"@key":"passwd","$":"${POSTGRES_PASSWORD}"},
+        {"@key":"dbtype","$":"postgis"}
+      ]
     }
   }
 }
 JSON
+)
 
-echo "Publish featuretype places"
-curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
-	-d '{"featureType":{"name":"places","nativeName":"places","srs":"EPSG:4326"}}' \
-	"$GS/rest/workspaces/demo/datastores/pg/featuretypes" || true
+if ! curl -fs -u "$BASIC_AUTH" "$GS/rest/workspaces/${WS}/datastores/${STORE}.json" >/dev/null; then
+	echo "Create datastore ${STORE} in ${WS}"
+	echo "$DS_PAYLOAD" | curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
+		-d @- "$GS/rest/workspaces/${WS}/datastores"
+else
+	echo "Update datastore ${STORE} in ${WS}"
+	echo "$DS_PAYLOAD" | curl -fsS -u "$BASIC_AUTH" -X PUT -H "Content-type: application/json" \
+		-d @- "$GS/rest/workspaces/${WS}/datastores/${STORE}.json"
+fi
 
-WFS_URL="${GS}/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=demo:places&outputFormat=application/json&count=2"
-echo "WFS call:"
-curl -fsS "$WFS_URL" | head -c 1024
-echo
+AVAILABLE=$(curl -fs -u "$BASIC_AUTH" \
+	"$GS/rest/workspaces/${WS}/datastores/${STORE}/featuretypes.json?list=available" |
+	jq -r '.list.string[]?')
 
-echo "Done"
-echo "Try this WFS (GeoJSON):"
-echo "$WFS_URL"
+for FT in $AVAILABLE; do
+	if curl -fs -u "$BASIC_AUTH" "$GS/rest/layers/${WS}:${FT}.json" >/dev/null; then
+		echo "Layer ${WS}:${FT} already published"
+	else
+		echo "Publishing ${FT}"
+		curl -fsS -u "$BASIC_AUTH" -X POST -H "Content-type: application/json" \
+			-d "{\"featureType\":{\"name\":\"${FT}\",\"srs\":\"EPSG:3006\"}}" \
+			"$GS/rest/workspaces/${WS}/datastores/${STORE}/featuretypes"
+	fi
+done
+
+CONFIGURED=$(
+	curl -fs -u "$BASIC_AUTH" \
+		"$GS/rest/workspaces/${WS}/datastores/${STORE}/featuretypes.json?list=configured" |
+		jq -r '.list.string[]?'
+)
+echo "Configured feature types in ${WS}/${STORE}:"
+echo "$CONFIGURED"
+
+FIRST_FT=$(echo "$AVAILABLE" | head -n1 || true)
+if [[ -n "${FIRST_FT:-}" ]]; then
+	WFS_URL="${GS}/ows?service=WFS&version=2.0.0&request=GetFeature&typeNames=${WS}:${FIRST_FT}&outputFormat=application/json&count=1"
+	echo "WFS call:"
+	curl -fsS "$WFS_URL" | head -c 1024 || true
+	echo
+	echo "Try this WFS (GeoJSON):"
+	echo "$WFS_URL"
+else
+	echo "No unpublished tables found in datastore ${STORE} (schema ${PG_SCHEMA})."
+fi

@@ -38,7 +38,7 @@ type Config struct {
 func loadConfig() Config {
 	var cfg Config
 	flag.StringVar(&cfg.TargetURL, "target", "http://localhost:8090/query", "Baseline server /query URL")
-	flag.StringVar(&cfg.LayerName, "layer", "demo:places", "Layer (WFS typeNames)")
+	flag.StringVar(&cfg.LayerName, "layer", "demo:NR_polygon", "Layer (WFS typeNames)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 32, "Concurrent workers")
 	flag.DurationVar(&cfg.Duration, "duration", 60*time.Second, "Test duration")
 	flag.Float64Var(&cfg.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")

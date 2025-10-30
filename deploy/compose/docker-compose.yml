@@ -2,7 +2,7 @@ name: h3-spatial-cache-dev
 
 services:
   postgis:
-    image: postgis/postgis:16-3.4
+    image: postgis/postgis:15-3.4
     container_name: postgis
     restart: unless-stopped
     environment:
@@ -19,7 +19,8 @@ services:
       - "5432:5432"
     volumes:
       - postgis-data:/var/lib/postgresql/data
-      - ../../scripts/seed-postgis.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+      - ../../scripts/seed/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
+      - ../../scripts/seed/10-metria.sql:/docker-entrypoint-initdb.d/10-metria.sql:ro
     networks: [gisnet]
 
   geoserver:

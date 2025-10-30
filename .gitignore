@@ -43,3 +43,6 @@ deploy/compose/.env
 deploy/compose/.env.*
 # keep example envs tracked
 !**/.env.example
+
+# DB data
+scripts/seed/10-metria.sql
