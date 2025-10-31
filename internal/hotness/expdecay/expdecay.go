@@ -111,3 +111,13 @@ func (t *Tracker) pick(cell string) *shard {
 	idx := h & (uint64(len(t.shards)) - 1)
 	return &t.shards[idx]
 }
+
+func (t *Tracker) Size() int {
+	total := 0
+	for i := range t.shards {
+		t.shards[i].mu.RLock()
+		total += len(t.shards[i].m)
+		t.shards[i].mu.RUnlock()
+	}
+	return total
+}

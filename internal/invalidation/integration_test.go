@@ -12,13 +12,14 @@ import (
 
 	"github.com/IBM/sarama"
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/invalidation"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/invalidation/kafkaconsumer"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/metrics"
 )
 
 type redisAdapter struct{ rdb *redis.Client }
@@ -54,6 +55,10 @@ func TestIntegration_Miniredis_DeleteAndMetrics(t *testing.T) {
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = rdb.Close() })
 
+	p := metrics.Init(metrics.Config{})
+	observability.Init(p.Registerer(), true)
+	observability.SetScenario("baseline")
+
 	layer, res := "demo:NR_polygon", 8
 	k1 := keys.Key(layer, res, "892a100d2b3ffff", "")
 	k2 := keys.Key(layer, res, "892a100d2b7ffff", "")
@@ -84,7 +89,7 @@ func TestIntegration_Miniredis_DeleteAndMetrics(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rr := httptest.NewRecorder()
-	promhttp.Handler().ServeHTTP(rr, req)
+	p.Handler().ServeHTTP(rr, req)
 
 	bodyStr := rr.Body.String()
 	has := func(s string) {

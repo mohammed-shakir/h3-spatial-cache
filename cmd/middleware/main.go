@@ -89,6 +89,11 @@ func run() int {
 				BuildDate: os.Getenv("BUILD_DATE"),
 			},
 		})
+
+		observability.Init(p.Registerer(), true)
+		observability.SetScenario(cfg.Scenario)
+		observability.ExposeBuildInfo(Version)
+
 		mux := http.NewServeMux()
 		mux.Handle(path, p.Handler())
 
@@ -118,6 +123,10 @@ func run() int {
 				log.Printf("metrics: shutdown error: %v", err)
 			}
 		}()
+	}
+
+	if !metricsEnabled {
+		observability.Init(nil, false)
 	}
 
 	if err := server.Run(ctx, cfg, logger, handler); err != nil {

@@ -100,6 +100,7 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 
 	var ev invalidation.Event
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
+		obs.IncKafkaConsumerError("decode")
 		obs.ObserveUpstreamLatency("kafka_decode", time.Since(start).Seconds())
 		return fmt.Errorf("json decode: %w", err)
 	}
@@ -123,6 +124,7 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 	}
 
 	if err := c.cache.Del(delKeys...); err != nil {
+		obs.IncKafkaConsumerError("redis_del")
 		obs.ObserveInvalidation(ev.Op, ev.Layer, 0, time.Since(start), err)
 		return fmt.Errorf("redis del: %w", err)
 	}

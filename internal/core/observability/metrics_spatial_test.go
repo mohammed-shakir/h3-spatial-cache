@@ -6,17 +6,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func TestSpatialMetrics_RegistrationAndLabels(t *testing.T) {
+	r := prometheus.NewRegistry()
+	Init(r, true)
+	SetScenario("baseline")
 	ObserveSpatialResponse("full_hit", "geojson", 0.012)
 	ObserveSpatialResponse("miss", "geojson", 0.250)
 	IncSpatialAggError("merge")
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rr := httptest.NewRecorder()
-	promhttp.Handler().ServeHTTP(rr, req)
+	promhttp.HandlerFor(r, promhttp.HandlerOpts{}).ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d want 200", rr.Code)
 	}

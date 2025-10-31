@@ -9,7 +9,9 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/metrics"
 )
 
 // creates new client connected to miniredis for testing
@@ -81,6 +83,10 @@ func TestContextDeadline_IsRespected(t *testing.T) {
 }
 
 func TestMetrics_Incremented(t *testing.T) {
+	p := metrics.Init(metrics.Config{})
+	observability.Init(p.Registerer(), true)
+	observability.SetScenario("baseline")
+
 	rc := newMini(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -92,7 +98,7 @@ func TestMetrics_Incremented(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rr := httptest.NewRecorder()
-	promhttp.Handler().ServeHTTP(rr, req)
+	p.Handler().ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("metrics status=%d", rr.Code)
 	}
@@ -102,7 +108,7 @@ func TestMetrics_Incremented(t *testing.T) {
 		!strings.Contains(body, `cache_op_total{op="del"`) {
 		t.Fatalf("missing cache_op_total metrics; got:\n%s", body)
 	}
-	if !strings.Contains(body, `cache_op_seconds_bucket{op="set"`) {
-		t.Fatalf("missing cache_op_seconds histogram; got:\n%s", body)
+	if !strings.Contains(body, `redis_operation_duration_seconds_bucket{op="set"`) {
+		t.Fatalf("missing redis_operation_duration_seconds histogram; got:\n%s", body)
 	}
 }

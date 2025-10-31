@@ -82,10 +82,12 @@ func (c *Client) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 	}
 
 	out := make(map[string][]byte, len(vals))
+	hits := 0
 	for i, v := range vals {
 		if v == nil {
 			continue // missing key
 		}
+		hits++
 		switch t := v.(type) {
 		case string:
 			out[keys[i]] = []byte(t)
@@ -94,6 +96,14 @@ func (c *Client) MGet(ctx context.Context, keys []string) (map[string][]byte, er
 		default:
 			out[keys[i]] = fmt.Append(nil, t)
 		}
+	}
+	if miss := len(keys) - hits; hits > 0 {
+		observability.AddCacheHits(hits)
+		if miss > 0 {
+			observability.AddCacheMisses(miss)
+		}
+	} else if len(keys) > 0 {
+		observability.AddCacheMisses(len(keys))
 	}
 	return out, nil
 }

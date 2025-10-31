@@ -8,160 +8,190 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-var scenarioLabel atomic.Value
+var (
+	enabled   atomic.Bool
+	scenarioV atomic.Value
+)
 
-func init() {
-	scenarioLabel.Store("baseline")
+func Init(r prometheus.Registerer, isEnabled bool) {
+	enabled.Store(isEnabled)
+	if scenarioV.Load() == nil {
+		scenarioV.Store("baseline")
+	}
+	if !isEnabled || r == nil {
+		return
+	}
+	initCollectors(r)
 }
 
-// update the scenario label used in metrics
+func Enabled() bool { return enabled.Load() }
+
 func SetScenario(s string) {
 	if s == "" {
 		s = "baseline"
 	}
-	scenarioLabel.Store(s)
+	scenarioV.Store(s)
 }
 
 func getScenario() string {
-	if v := scenarioLabel.Load(); v != nil {
-		if s, ok := v.(string); ok && s != "" {
-			return s
-		}
+	v := scenarioV.Load()
+	if v == nil {
+		return "baseline"
+	}
+	if s, ok := v.(string); ok && s != "" {
+		return s
 	}
 	return "baseline"
 }
 
 var (
-	decisionRequestsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "decision_requests_total",
-			Help: "Number of cache decisions by outcome.",
-		},
-		[]string{"outcome", "scenario"},
-	)
+	httpRequestsTotal              *prometheus.CounterVec
+	httpRequestDurationSeconds     *prometheus.HistogramVec
+	upstreamLatencySeconds         *prometheus.HistogramVec
+	decisionRequestsTotal          *prometheus.CounterVec
+	spatialResponseTotal           *prometheus.CounterVec
+	spatialResponseDurationSeconds *prometheus.HistogramVec
+	spatialAggregationErrorsTotal  *prometheus.CounterVec
+	spatialCacheHitsTotal          *prometheus.CounterVec
+	spatialCacheMissesTotal        *prometheus.CounterVec
+	redisOperationDurationSeconds  *prometheus.HistogramVec
+	cacheOpTotal                   *prometheus.CounterVec
+	spatialCacheHotKeys            *prometheus.GaugeVec
+	invEvents                      *prometheus.CounterVec
+	invDeletedKeys                 *prometheus.CounterVec
+	invLatency                     *prometheus.HistogramVec
+	kafkaConsumerErrorsTotal       *prometheus.CounterVec
+)
 
-	httpRequestsTotal = promauto.NewCounterVec(
+func initCollectors(r prometheus.Registerer) {
+	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "http_requests_total",
 			Help: "Total number of HTTP requests.",
-		},
-		[]string{"method", "route", "status", "scenario"},
+		}, []string{"method", "route", "status", "scenario"},
 	)
-
-	httpRequestDurationSeconds = promauto.NewHistogramVec(
+	httpRequestDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "http_request_duration_seconds",
 			Help:    "Duration of HTTP requests in seconds.",
-			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12), // 5ms to ~20s
-		},
-		[]string{"method", "route", "status", "scenario"},
+			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
+		}, []string{"method", "route", "status", "scenario"},
 	)
-
-	upstreamLatencySeconds = promauto.NewHistogramVec(
+	upstreamLatencySeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "upstream_latency_seconds",
 			Help:    "Latency of upstream calls in seconds.",
 			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
-		},
-		[]string{"upstream", "scenario"},
+		}, []string{"upstream", "scenario"},
 	)
-
-	buildInfo = promauto.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name:        "app_build_info",
-			Help:        "Build information for the binary.",
-			ConstLabels: nil,
-		},
-		[]string{"version"},
-	)
-
-	cacheResults = promauto.NewCounterVec(
+	decisionRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
-			Name: "cache_results_total",
-			Help: "Cache results by outcome.",
-		},
-		[]string{"outcome", "scenario"},
+			Name: "decision_requests_total",
+			Help: "Number of cache decisions by outcome.",
+		}, []string{"outcome", "scenario"},
 	)
 
-	cacheOpTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "cache_op_total",
-			Help: "Count of cache operations by op and outcome.",
-		},
-		[]string{"op", "outcome", "scenario"},
-	)
-
-	cacheOpSeconds = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "cache_op_seconds",
-			Help:    "Latency of cache operations in seconds.",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 14), // 1ms .. ~8s
-		},
-		[]string{"op", "scenario"},
-	)
-	invEvents = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "invalidation_events_total",
-			Help: "Number of invalidation events handled.",
-		},
-		[]string{"result", "op", "layer"},
-	)
-	invDeletedKeys = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "invalidation_deleted_keys_total",
-			Help: "Total number of cache keys deleted by invalidation.",
-		},
-		[]string{"layer"},
-	)
-	invLatency = promauto.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "invalidation_process_seconds",
-			Help:    "Time to process a single invalidation event.",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms .. ~16s
-		},
-		[]string{"op", "layer"},
-	)
-
-	spatialResponseTotal = promauto.NewCounterVec(
+	spatialResponseTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "spatial_response_total",
 			Help: "Total number of composed spatial responses by hit class and format.",
-		},
-		[]string{"hit_class", "format", "scenario"},
+		}, []string{"hit_class", "format", "scenario"},
 	)
-
-	spatialAggregationErrorsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "spatial_aggregation_errors_total",
-			Help: "Count of errors in the spatial aggregation/composition pipeline by stage.",
-		},
-		[]string{"stage"},
-	)
-
-	spatialResponseDurationSeconds = promauto.NewHistogramVec(
+	spatialResponseDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "spatial_response_duration_seconds",
 			Help:    "End-to-end latency to compose a spatial response (seconds).",
 			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
-		},
-		[]string{"scenario", "hit_class"},
+		}, []string{"scenario", "hit_class"},
 	)
-)
+	spatialAggregationErrorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_aggregation_errors_total",
+			Help: "Count of errors in the spatial aggregation/composition pipeline by stage.",
+		}, []string{"stage"},
+	)
 
-func observe(op, layer string, keys int, dur time.Duration, err error) {
-	if err != nil {
-		invEvents.WithLabelValues("error", op, layer).Inc()
-		return
-	}
-	invEvents.WithLabelValues("ok", op, layer).Inc()
-	invDeletedKeys.WithLabelValues(layer).Add(float64(keys))
-	invLatency.WithLabelValues(op, layer).Observe(dur.Seconds())
+	spatialCacheHitsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_cache_hits_total",
+			Help: "Count of cache hits (keys found).",
+		}, []string{"scenario"},
+	)
+	spatialCacheMissesTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_cache_misses_total",
+			Help: "Count of cache misses (keys not found).",
+		}, []string{"scenario"},
+	)
+	redisOperationDurationSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "redis_operation_duration_seconds",
+			Help:    "Latency of Redis operations in seconds.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms..~16s
+		}, []string{"op", "scenario"},
+	)
+	cacheOpTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cache_op_total",
+			Help: "Count of cache operations by op and outcome.",
+		}, []string{"op", "outcome", "scenario"},
+	)
+
+	spatialCacheHotKeys = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "spatial_cache_hot_keys",
+			Help: "Current hot set size(s) or counts per tier.",
+		}, []string{"scenario", "tier"},
+	)
+
+	invEvents = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "invalidation_events_total",
+			Help: "Number of invalidation events handled.",
+		}, []string{"result", "op", "layer"},
+	)
+	invDeletedKeys = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "invalidation_deleted_keys_total",
+			Help: "Total number of cache keys deleted by invalidation.",
+		}, []string{"layer"},
+	)
+	invLatency = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "invalidation_process_seconds",
+			Help:    "Time to process a single invalidation event.",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15),
+		}, []string{"op", "layer"},
+	)
+
+	kafkaConsumerErrorsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "kafka_consumer_errors_total",
+			Help: "Errors encountered by the Kafka consumer.",
+		}, []string{"scenario", "kind"},
+	)
+
+	// register
+	r.MustRegister(
+		httpRequestsTotal, httpRequestDurationSeconds, upstreamLatencySeconds,
+		decisionRequestsTotal,
+		spatialResponseTotal, spatialResponseDurationSeconds, spatialAggregationErrorsTotal,
+		spatialCacheHitsTotal, spatialCacheMissesTotal, redisOperationDurationSeconds, cacheOpTotal,
+		spatialCacheHotKeys,
+		invEvents, invDeletedKeys, invLatency,
+		kafkaConsumerErrorsTotal,
+	)
 }
 
+func ExposeBuildInfo(_ string) {}
+
+// record an http request metric
 func ObserveHTTP(method, route string, status int, durationSeconds float64) {
+	if !enabled.Load() || httpRequestsTotal == nil {
+		return
+	}
 	s := getScenario()
 	st := strconv.Itoa(status)
 	httpRequestsTotal.WithLabelValues(method, route, st, s).Inc()
@@ -169,42 +199,26 @@ func ObserveHTTP(method, route string, status int, durationSeconds float64) {
 }
 
 func ObserveUpstreamLatency(upstream string, durationSeconds float64) {
-	s := getScenario()
-	upstreamLatencySeconds.WithLabelValues(upstream, s).Observe(durationSeconds)
-}
-
-func IncCacheHit(scenario string) {
-	s := scenario
-	if s == "" {
-		s = getScenario()
+	if !enabled.Load() || upstreamLatencySeconds == nil {
+		return
 	}
-	cacheResults.WithLabelValues("hit", s).Inc()
-}
-
-func IncCacheMiss(scenario string) {
-	s := scenario
-	if s == "" {
-		s = getScenario()
-	}
-	cacheResults.WithLabelValues("miss", s).Inc()
-}
-
-func ExposeBuildInfo(version string) {
-	if version == "" {
-		version = "dev"
-	}
-	buildInfo.WithLabelValues(version).Set(1)
+	upstreamLatencySeconds.WithLabelValues(upstream, getScenario()).Observe(durationSeconds)
 }
 
 func IncDecision(outcome string) {
-	s := getScenario()
+	if !enabled.Load() || decisionRequestsTotal == nil {
+		return
+	}
 	if outcome != "cache" && outcome != "nocache" {
 		outcome = "nocache"
 	}
-	decisionRequestsTotal.WithLabelValues(outcome, s).Inc()
+	decisionRequestsTotal.WithLabelValues(outcome, getScenario()).Inc()
 }
 
 func ObserveCacheOp(op string, err error, durationSeconds float64) {
+	if !enabled.Load() {
+		return
+	}
 	if op == "" {
 		op = "unknown"
 	}
@@ -220,23 +234,76 @@ func ObserveCacheOp(op string, err error, durationSeconds float64) {
 			outcome = "error"
 		}
 	}
-	cacheOpTotal.WithLabelValues(op, outcome, s).Inc()
-	cacheOpSeconds.WithLabelValues(op, s).Observe(durationSeconds)
+	if cacheOpTotal != nil {
+		cacheOpTotal.WithLabelValues(op, outcome, s).Inc()
+	}
+	if redisOperationDurationSeconds != nil {
+		redisOperationDurationSeconds.WithLabelValues(op, s).Observe(durationSeconds)
+	}
 }
 
 func ObserveInvalidation(op, layer string, keys int, dur time.Duration, err error) {
-	observe(op, layer, keys, dur, err)
+	if !enabled.Load() || invEvents == nil {
+		return
+	}
+	if err != nil {
+		invEvents.WithLabelValues("error", op, layer).Inc()
+		return
+	}
+	invEvents.WithLabelValues("ok", op, layer).Inc()
+	invDeletedKeys.WithLabelValues(layer).Add(float64(keys))
+	invLatency.WithLabelValues(op, layer).Observe(dur.Seconds())
 }
 
 func ObserveSpatialResponse(hitClass, format string, durSeconds float64) {
+	if !enabled.Load() || spatialResponseTotal == nil {
+		return
+	}
 	s := getScenario()
 	spatialResponseTotal.WithLabelValues(hitClass, format, s).Inc()
 	spatialResponseDurationSeconds.WithLabelValues(s, hitClass).Observe(durSeconds)
 }
 
 func IncSpatialAggError(stage string) {
+	if !enabled.Load() || spatialAggregationErrorsTotal == nil {
+		return
+	}
 	if stage == "" {
 		stage = "unknown"
 	}
 	spatialAggregationErrorsTotal.WithLabelValues(stage).Inc()
+}
+
+func AddCacheHits(n int) {
+	if !enabled.Load() || spatialCacheHitsTotal == nil || n <= 0 {
+		return
+	}
+	spatialCacheHitsTotal.WithLabelValues(getScenario()).Add(float64(n))
+}
+
+func AddCacheMisses(n int) {
+	if !enabled.Load() || spatialCacheMissesTotal == nil || n <= 0 {
+		return
+	}
+	spatialCacheMissesTotal.WithLabelValues(getScenario()).Add(float64(n))
+}
+
+func SetHotKeysGauge(tier string, n int) {
+	if !enabled.Load() || spatialCacheHotKeys == nil {
+		return
+	}
+	if tier == "" {
+		tier = "topN"
+	}
+	spatialCacheHotKeys.WithLabelValues(getScenario(), tier).Set(float64(n))
+}
+
+func IncKafkaConsumerError(kind string) {
+	if !enabled.Load() || kafkaConsumerErrorsTotal == nil {
+		return
+	}
+	if kind == "" {
+		kind = "unknown"
+	}
+	kafkaConsumerErrorsTotal.WithLabelValues(getScenario(), kind).Inc()
 }

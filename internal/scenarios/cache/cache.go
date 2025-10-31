@@ -181,7 +181,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			return
 		}
 		e.writeJSON(w, body)
-		observability.IncCacheHit("cache")
+		observability.AddCacheHits(len(parts))
 		e.logger.Info("cache full-hit",
 			"layer", q.Layer, "res", e.res,
 			"cells", len(cells), "hits", len(parts), "misses", 0,
@@ -250,7 +250,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		}
 	}
 
-	observability.IncCacheMiss("cache")
+	observability.AddCacheMisses(len(missing))
 
 	parts = append(parts, fetched...)
 	body, mErr := e.agg.Merge(parts)
