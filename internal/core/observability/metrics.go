@@ -124,6 +124,31 @@ var (
 		},
 		[]string{"op", "layer"},
 	)
+
+	spatialResponseTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_response_total",
+			Help: "Total number of composed spatial responses by hit class and format.",
+		},
+		[]string{"hit_class", "format", "scenario"},
+	)
+
+	spatialAggregationErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_aggregation_errors_total",
+			Help: "Count of errors in the spatial aggregation/composition pipeline by stage.",
+		},
+		[]string{"stage"},
+	)
+
+	spatialResponseDurationSeconds = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "spatial_response_duration_seconds",
+			Help:    "End-to-end latency to compose a spatial response (seconds).",
+			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
+		},
+		[]string{"scenario", "hit_class"},
+	)
 )
 
 func observe(op, layer string, keys int, dur time.Duration, err error) {
@@ -201,4 +226,17 @@ func ObserveCacheOp(op string, err error, durationSeconds float64) {
 
 func ObserveInvalidation(op, layer string, keys int, dur time.Duration, err error) {
 	observe(op, layer, keys, dur, err)
+}
+
+func ObserveSpatialResponse(hitClass, format string, durSeconds float64) {
+	s := getScenario()
+	spatialResponseTotal.WithLabelValues(hitClass, format, s).Inc()
+	spatialResponseDurationSeconds.WithLabelValues(s, hitClass).Observe(durSeconds)
+}
+
+func IncSpatialAggError(stage string) {
+	if stage == "" {
+		stage = "unknown"
+	}
+	spatialAggregationErrorsTotal.WithLabelValues(stage).Inc()
 }
