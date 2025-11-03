@@ -15,8 +15,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
-    ports:
-      - "5432:5432"
+    ports: ["5432:5432"]
     volumes:
       - postgis-data:/var/lib/postgresql/data
       - ../../scripts/seed/00-extensions.sql:/docker-entrypoint-initdb.d/00-extensions.sql:ro
@@ -30,8 +29,7 @@ services:
     depends_on:
       postgis:
         condition: service_healthy
-    ports:
-      - "${GEOSERVER_PORT}:8080"
+    ports: ["${GEOSERVER_PORT}:8080"]
     volumes:
       - geoserver-data:/opt/geoserver_data
     # Check that web ui is responding
@@ -52,13 +50,9 @@ services:
     restart: unless-stopped
     # Run redis in in-memory mode
     command: >
-      redis-server
-      --save ""
-      --appendonly no
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
-    ports:
-      - "6379:6379"
+      redis-server --save "" --appendonly no
+      --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports: ["6379:6379"]
     # Check that container is up
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -81,9 +75,7 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_CLUSTER_ID: ${KAFKA_CLUSTER_ID}
-    ports:
-      - "9092:9092"
-      - "29092:29092"
+    ports: ["9092:9092", "29092:29092"]
     # Test list kafka topics
     healthcheck:
       test:
@@ -98,25 +90,145 @@ services:
       - kafka-data:/var/lib/kafka/data
     networks: [gisnet]
 
+  # Middleware (optional: start with --profile app)
   app:
-    # Only runs when profile is enabled (so you can run it locally too)
     profiles: ["app"]
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile
+    container_name: middleware
     environment:
       GEOSERVER_URL: http://geoserver:8080/geoserver
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: kafka:9092
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+      # Metrics on a side HTTP server inside the container
+      METRICS_ENABLED: "true"
+      METRICS_ADDR: ":9090"
+      METRICS_PATH: "/metrics"
+      SCENARIO: ${SCENARIO:-baseline}
     depends_on:
-      geoserver:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      kafka:
-        condition: service_healthy
-    ports:
-      - "8090:8090"
+      geoserver: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+    ports: ["8090:8090"]
+    networks: [gisnet]
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    ports: ["9090:9090"]
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:9090/-/ready >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [gisnet]
+
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    ports: ["3000:3000"]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+    depends_on:
+      prometheus: { condition: service_healthy }
+      loki: { condition: service_healthy }
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3000/api/health >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [gisnet]
+
+  loki:
+    image: grafana/loki:2.9.10
+    container_name: loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/config.yml"]
+    ports: ["3100:3100"]
+    volumes:
+      - ./loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://localhost:3100/ready >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [gisnet]
+
+  promtail:
+    image: grafana/promtail:2.9.10
+    container_name: promtail
+    restart: unless-stopped
+    command: ["-config.file=/etc/promtail/config.yml"]
+    volumes:
+      - ./promtail/config.yml:/etc/promtail/config.yml:ro
+      - promtail-positions:/positions
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      loki: { condition: service_healthy }
+    networks: [gisnet]
+
+  # Optional exporters (off by default)
+  # Enable with: docker compose --profile exporters up -d
+  redis-exporter:
+    profiles: ["exporters"]
+    image: oliver006/redis_exporter:v1.62.0
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis:6379
+    command: ["--redis.addr=redis://redis:6379"]
+    ports: ["9121:9121"]
+    networks: [gisnet]
+
+  postgres-exporter:
+    profiles: ["exporters"]
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgis:5432/${POSTGRES_DB}?sslmode=disable
+    ports: ["9187:9187"]
+    networks: [gisnet]
+
+  kafka-exporter:
+    profiles: ["exporters"]
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: kafka-exporter
+    restart: unless-stopped
+    command: ["--kafka.server=kafka:9092"]
+    ports: ["9308:9308"]
     networks: [gisnet]
 
 networks:
@@ -126,3 +238,7 @@ volumes:
   postgis-data:
   geoserver-data:
   kafka-data:
+  prometheus-data:
+  grafana-data:
+  loki-data:
+  promtail-positions:

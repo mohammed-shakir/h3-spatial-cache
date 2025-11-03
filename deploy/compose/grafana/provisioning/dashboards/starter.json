@@ -1,0 +1,122 @@
+{
+	"id": null,
+	"uid": "starter-spatial",
+	"title": "Spatial Cache – Starter",
+	"tags": ["spatial", "cache", "h3"],
+	"timezone": "browser",
+	"schemaVersion": 39,
+	"version": 1,
+	"refresh": "10s",
+	"templating": {
+		"list": [
+			{
+				"name": "scenario",
+				"type": "query",
+				"datasource": { "type": "prometheus", "uid": "Prometheus" },
+				"refresh": 1,
+				"hide": 0,
+				"query": "label_values(spatial_response_total, scenario)",
+				"includeAll": false,
+				"multi": false,
+				"current": {}
+			}
+		]
+	},
+	"panels": [
+		{
+			"type": "timeseries",
+			"title": "Requests /s",
+			"gridPos": { "x": 0, "y": 0, "w": 12, "h": 7 },
+			"targets": [
+				{
+					"expr": "sum by (format) (rate(spatial_response_total{scenario=\"$scenario\"}[1m]))",
+					"legendFormat": "{{format}}"
+				}
+			]
+		},
+		{
+			"type": "timeseries",
+			"title": "Hit classes (rate/s)",
+			"gridPos": { "x": 12, "y": 0, "w": 12, "h": 7 },
+			"options": { "legend": { "showLegend": true } },
+			"targets": [
+				{
+					"expr": "sum by (hit_class) (rate(spatial_response_total{scenario=\"$scenario\"}[1m]))",
+					"legendFormat": "{{hit_class}}"
+				}
+			]
+		},
+		{
+			"type": "timeseries",
+			"title": "End-to-end latency p95 / p99 (s)",
+			"gridPos": { "x": 0, "y": 7, "w": 12, "h": 8 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.95, sum by (le) (rate(spatial_response_duration_seconds_bucket{scenario=\"$scenario\"}[5m])))",
+					"legendFormat": "p95"
+				},
+				{
+					"expr": "histogram_quantile(0.99, sum by (le) (rate(spatial_response_duration_seconds_bucket{scenario=\"$scenario\"}[5m])))",
+					"legendFormat": "p99"
+				}
+			]
+		},
+		{
+			"type": "timeseries",
+			"title": "Redis op duration p95 (s) by op",
+			"gridPos": { "x": 12, "y": 7, "w": 12, "h": 8 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.95, sum by (op, le) (rate(redis_operation_duration_seconds_bucket{scenario=\"$scenario\"}[5m])))",
+					"legendFormat": "{{op}} p95"
+				}
+			]
+		},
+		{
+			"type": "gauge",
+			"title": "Hot keys (tier)",
+			"gridPos": { "x": 0, "y": 15, "w": 8, "h": 6 },
+			"options": {
+				"reduceOptions": {
+					"calcs": ["lastNotNull"],
+					"fields": "",
+					"values": false
+				}
+			},
+			"targets": [
+				{
+					"expr": "spatial_cache_hot_keys{scenario=\"$scenario\",tier=\"topN\"}"
+				}
+			]
+		},
+		{
+			"type": "stat",
+			"title": "Cache hit rate (%)",
+			"gridPos": { "x": 8, "y": 15, "w": 8, "h": 6 },
+			"options": {
+				"reduceOptions": {
+					"calcs": ["lastNotNull"],
+					"fields": "",
+					"values": false
+				}
+			},
+			"targets": [
+				{
+					"expr": "100 * sum(rate(spatial_response_total{scenario=\"$scenario\",hit_class=~\"full_hit|partial_hit\"}[5m])) / sum(rate(spatial_response_total{scenario=\"$scenario\"}[5m]))",
+					"legendFormat": "hit %"
+				}
+			]
+		},
+		{
+			"type": "timeseries",
+			"title": "HTTP /query duration p95 (s)",
+			"gridPos": { "x": 16, "y": 15, "w": 8, "h": 6 },
+			"targets": [
+				{
+					"expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{scenario=\"$scenario\",route=\"/query\"}[5m])))",
+					"legendFormat": "p95"
+				}
+			]
+		}
+	]
+}
