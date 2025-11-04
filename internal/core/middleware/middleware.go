@@ -3,13 +3,25 @@ package middleware
 import (
 	"log/slog"
 	"net/http"
+
+	mylog "github.com/mohammed-shakir/h3-spatial-cache/internal/logger"
 )
 
-func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
+func Logging(l *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
-			logger.Debug("http request", "method", r.Method, "path", r.URL.Path)
-			next.ServeHTTP(w, r)
+			reqID := r.Header.Get("X-Request-ID")
+			if reqID == "" {
+				reqID = mylog.NewID()
+				w.Header().Set("X-Request-ID", reqID)
+			}
+			ctx := mylog.WithRequestID(r.Context(), reqID)
+			ctx = mylog.WithComponent(ctx, "http")
+			l.LogAttrs(ctx, slog.LevelDebug, "http request",
+				slog.String("method", r.Method),
+				slog.String("path", r.URL.Path),
+			)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		}
 		return http.HandlerFunc(fn)
 	}

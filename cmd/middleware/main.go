@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,6 +19,7 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/ogc"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/server"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/logger"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/metrics"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios"
 	_ "github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios/baseline"
@@ -30,6 +32,15 @@ func main() {
 	os.Exit(run())
 }
 
+func envInt(k string, def int) int {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
 func run() int {
 	// overriding scenario via flag
 	scenarioFlag := flag.String("scenario", "", "scenario name")
@@ -39,10 +50,20 @@ func run() int {
 	if *scenarioFlag != "" {
 		cfg.Scenario = strings.TrimSpace(*scenarioFlag)
 	}
-	logger := observability.NewLogger(cfg.LogLevel)
+
+	zl := logger.Build(logger.Config{
+		Level:     cfg.LogLevel,
+		Console:   strings.ToLower(os.Getenv("LOG_CONSOLE")) == "true",
+		SampleN:   envInt("LOG_SAMPLE_N", 0),
+		Scenario:  cfg.Scenario,
+		Component: "middleware",
+	}, os.Stdout)
+
+	appLog := logger.NewSlog(&zl)
+
 	observability.SetScenario(cfg.Scenario)
 	observability.ExposeBuildInfo(Version)
-	logger.Info("starting middleware",
+	appLog.Info("starting middleware",
 		"addr", cfg.Addr,
 		"version", Version,
 		"geoserver", cfg.GeoServerURL,
@@ -51,16 +72,16 @@ func run() int {
 	httpClient := httpclient.NewOutbound()
 	owsURL := ogc.OWSEndpoint(cfg.GeoServerURL)
 
-	exec, err := executor.New(logger, httpClient, owsURL)
+	exec, err := executor.New(appLog, httpClient, owsURL)
 	if err != nil {
-		logger.Error("failed to initialize executor", "err", err)
+		appLog.Error("failed to initialize executor", "err", err)
 		return 1
 	}
 
 	// selected scenario
-	handler, err := scenarios.New(cfg.Scenario, cfg, logger, exec)
+	handler, err := scenarios.New(cfg.Scenario, cfg, appLog, exec)
 	if err != nil {
-		logger.Error("scenario setup failed", "err", err)
+		appLog.Error("scenario setup failed", "err", err)
 		return 1
 	}
 
@@ -129,10 +150,10 @@ func run() int {
 		observability.Init(nil, false)
 	}
 
-	if err := server.Run(ctx, cfg, logger, handler); err != nil {
-		logger.Error("server exited with error", "err", err)
+	if err := server.Run(ctx, cfg, appLog, handler); err != nil {
+		appLog.Error("server exited with error", "err", err)
 		return 1
 	}
-	logger.Info("server stopped")
+	appLog.Info("server stopped")
 	return 0
 }

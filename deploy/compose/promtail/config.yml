@@ -17,3 +17,25 @@ scrape_configs:
           job: docker
     pipeline_stages:
       - docker: {}
+      - json:
+          source: log
+          expressions:
+            level: level
+            msg: msg
+            component: component
+            scenario: scenario
+            request_id: request_id
+            hit_class: hit_class
+            event: event
+      - labels:
+          level:
+          component:
+          scenario:
+          hit_class:
+  - job_name: local-middleware
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job: local
+          component: middleware
+          __path__: /workspace/logs/middleware.log

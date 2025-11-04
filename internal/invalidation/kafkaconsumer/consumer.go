@@ -9,12 +9,14 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"github.com/rs/zerolog"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	obs "github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/invalidation"
+	mylog "github.com/mohammed-shakir/h3-spatial-cache/internal/logger"
 )
 
 type CellMapper interface {
@@ -33,6 +35,7 @@ type Consumer struct {
 	mapper   CellMapper
 	hot      HotnessResetter
 	resRange []int
+	zlog     *zerolog.Logger
 }
 
 func New(cfg Config, logger *slog.Logger, c cache.Interface, mapper CellMapper, hot HotnessResetter, resRange []int) *Consumer {
@@ -73,9 +76,15 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}
 	defer func() { _ = group.Close() }()
 
-	handler := &groupHandler{
-		process: c.ProcessOne,
-	}
+	base := mylog.WithComponent(context.Background(), "kafka_consumer")
+	zl := mylog.Build(mylog.Config{
+		Level:     "info",
+		Scenario:  "baseline",
+		Component: "kafka_consumer",
+	}, nil)
+	c.zlog = mylog.FromContext(base, &zl)
+
+	handler := &groupHandler{process: c.ProcessOne}
 
 	c.logger.Info("kafka invalidation consumer starting",
 		"brokers", c.cfg.Brokers, "topic", c.cfg.Topic, "group", c.cfg.GroupID)
@@ -88,6 +97,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 		default:
 			if err := group.Consume(ctx, []string{c.cfg.Topic}, handler); err != nil {
 				c.logger.Error("consumer error", "err", err)
+				c.zlog.Error().Err(err).
+					Strs("brokers", c.cfg.Brokers).
+					Str("topic", c.cfg.Topic).
+					Msg("kafka consumer error")
 				time.Sleep(2 * time.Second)
 			}
 		}
@@ -102,6 +115,14 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
 		obs.IncKafkaConsumerError("decode")
 		obs.ObserveUpstreamLatency("kafka_decode", time.Since(start).Seconds())
+
+		mylog.FromContext(ctx, c.zlog).Error().
+			Str("kind", "decode").
+			Str("topic", msg.Topic).
+			Int32("partition", msg.Partition).
+			Int64("offset", msg.Offset).
+			Msg("kafka error")
+
 		return fmt.Errorf("json decode: %w", err)
 	}
 
@@ -126,6 +147,14 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 	if err := c.cache.Del(delKeys...); err != nil {
 		obs.IncKafkaConsumerError("redis_del")
 		obs.ObserveInvalidation(ev.Op, ev.Layer, 0, time.Since(start), err)
+
+		mylog.FromContext(ctx, c.zlog).Error().
+			Str("kind", "redis_del").
+			Str("topic", msg.Topic).
+			Int32("partition", msg.Partition).
+			Int("keys", len(delKeys)).
+			Msg("kafka error")
+
 		return fmt.Errorf("redis del: %w", err)
 	}
 
@@ -136,6 +165,13 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 	obs.ObserveInvalidation(ev.Op, ev.Layer, len(delKeys), time.Since(start), nil)
 	c.logger.Debug("invalidated keys",
 		"layer", ev.Layer, "op", ev.Op, "cells", len(cells), "keys", len(delKeys))
+
+	mylog.FromContext(ctx, c.zlog).Info().
+		Str("event", "invalidation").
+		Str("op", ev.Op).Str("layer", ev.Layer).
+		Int("cells", len(cells)).Int("keys", len(delKeys)).
+		Msg("invalidated keys")
+
 	return nil
 }
 

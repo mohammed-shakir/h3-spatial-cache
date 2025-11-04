@@ -117,6 +117,24 @@
 					"legendFormat": "p95"
 				}
 			]
+		},
+		{
+			"type": "logs",
+			"title": "App Logs (Loki)",
+			"gridPos": { "x": 0, "y": 21, "w": 24, "h": 8 },
+			"options": {
+				"dedupStrategy": "none",
+				"showLabels": true,
+				"showTime": true,
+				"wrapLogMessage": true
+			},
+			"targets": [
+				{
+					"expr": "{job=\"docker\", component=~\"middleware|kafka_consumer|hotness\"}",
+					"refId": "A",
+					"datasource": { "type": "loki", "uid": "Loki" }
+				}
+			]
 		}
 	]
 }
