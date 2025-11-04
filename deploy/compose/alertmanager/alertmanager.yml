@@ -1,0 +1,9 @@
+route:
+  receiver: dev-null
+  group_by: ["alertname", "scenario"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+receivers:
+  - name: dev-null

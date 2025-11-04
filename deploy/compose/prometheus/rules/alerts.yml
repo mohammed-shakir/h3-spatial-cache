@@ -1,0 +1,68 @@
+groups:
+  - name: spatial-alerts
+    rules:
+      - alert: HighCacheMissRatio
+        expr: (
+          sum by (scenario) (rate(spatial_response_total{hit_class="miss"}[5m]))
+          /
+          clamp_min(sum by (scenario) (rate(spatial_response_total[5m])), 1e-9)) > 0.50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High miss ratio in {{ $labels.scenario }}"
+          description: "Cache miss ratio > 50% for 10m. Investigate cache fills, TTLs, or hot set sizing."
+
+      - alert: ElevatedLatencyP95
+        expr: :spatial:latency:p95:5m > 0.30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 latency high in {{ $labels.scenario }}"
+          description: "p95 end-to-end > 300ms for 10m."
+
+      - alert: ElevatedLatencyP99
+        expr: :spatial:latency:p99:5m > 0.80
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "p99 latency very high in {{ $labels.scenario }}"
+          description: "p99 end-to-end > 800ms for 5m."
+
+      - alert: RedisOpLatencyHigh
+        expr: max by (op) (:redis:op:p95:5m) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis {{ $labels.op }} p95 is slow"
+          description: "Redis {{ $labels.op }} p95 > 50ms for 5m (possible backend saturation)."
+
+      - alert: MemoryHigh
+        expr: process_resident_memory_bytes > 800*1024*1024
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Resident memory high"
+          description: "RSS > 800MiB for 15m (consider limits/leaks/traffic)."
+
+      - alert: GoGCStallHigh
+        expr: max by (instance) (go_gc_duration_seconds{quantile="0.99"}) > 0.25
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GC pauses high"
+          description: "go_gc_duration_seconds{q=0.99} > 250ms for 10m."
+
+      - alert: GoroutinesHigh
+        expr: go_goroutines > 4000
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Goroutines elevated"
+          description: "Goroutine count > 4000 for 10m (watch for buildup)."

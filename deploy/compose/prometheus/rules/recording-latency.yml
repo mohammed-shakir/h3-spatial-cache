@@ -1,0 +1,20 @@
+groups:
+  - name: spatial-latency-recording
+    interval: 30s
+    rules:
+      # End-to-end p95/p99 (seconds) by scenario
+      - record: :spatial:latency:p95:5m
+        expr: histogram_quantile(
+          0.95,
+          sum by (scenario, le) (rate(spatial_response_duration_seconds_bucket[5m])))
+
+      - record: :spatial:latency:p99:5m
+        expr: histogram_quantile(
+          0.99,
+          sum by (scenario, le) (rate(spatial_response_duration_seconds_bucket[5m])))
+
+      # HTTP /query p95 specifically (seconds)
+      - record: :http:query:p95:5m
+        expr: histogram_quantile(
+          0.95,
+          sum by (le) (rate(http_request_duration_seconds_bucket{route="/query"}[5m])))

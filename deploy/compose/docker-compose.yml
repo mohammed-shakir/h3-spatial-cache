@@ -125,6 +125,7 @@ services:
     ports: ["9090:9090"]
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -197,6 +198,16 @@ services:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
     depends_on:
       loki: { condition: service_healthy }
+    networks: [gisnet]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    ports: ["9093:9093"]
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
     networks: [gisnet]
 
   # Optional exporters (off by default)

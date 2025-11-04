@@ -1,0 +1,21 @@
+groups:
+  - name: spatial-cache-recording
+    interval: 30s
+    rules:
+      # Request rate by scenario
+      - record: :spatial:req_rate:1m
+        expr: sum by (scenario) (rate(spatial_response_total[1m]))
+
+      # Miss rate and hit ratio (5m windows) by scenario
+      - record: :spatial:miss_rate:5m
+        expr: sum by (scenario) (rate(spatial_response_total{hit_class="miss"}[5m]))
+
+      - record: :spatial:hit_ratio:5m
+        expr: (
+          sum by (scenario) (rate(spatial_response_total{hit_class=~"full_hit|partial_hit"}[5m]))) / clamp_min(sum by (scenario) (rate(spatial_response_total[5m])), 1e-9)
+
+      # Redis op p95 by op (for dashboards/alerts)
+      - record: :redis:op:p95:5m
+        expr: histogram_quantile(
+          0.95,
+          sum by (op, le) (rate(redis_operation_duration_seconds_bucket[5m])))
