@@ -1,0 +1,322 @@
+package kafka
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/IBM/sarama"
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/invalidation"
+)
+
+type Mapper interface {
+	CellsForBBox(bbox model.BBox, res int) (model.Cells, error)
+	CellsForPolygon(poly model.Polygon, res int) (model.Cells, error)
+}
+
+type Runner struct {
+	log      *slog.Logger
+	cfg      InvalidationConfig
+	cache    cache.Interface
+	mapper   Mapper
+	resRange []int
+
+	ms  *metricSet
+	ver *versionDedupe
+
+	assigned atomic.Bool
+	assignMu sync.RWMutex
+	assign   map[int32]struct{}
+
+	wg     sync.WaitGroup
+	cancel context.CancelFunc
+}
+
+type Options struct {
+	Logger   *slog.Logger
+	Register prometheus.Registerer
+	ResRange []int
+}
+
+func New(cfg InvalidationConfig, c cache.Interface, m Mapper, opts Options) *Runner {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+	r := &Runner{
+		log:      opts.Logger,
+		cfg:      cfg,
+		cache:    c,
+		mapper:   m,
+		resRange: opts.ResRange,
+		ms:       newMetricSet(opts.Register),
+		ver:      newVersionDedupe(8192),
+		assign:   map[int32]struct{}{},
+	}
+	if len(r.resRange) == 0 {
+		r.resRange = []int{8}
+	}
+	return r
+}
+
+func (r *Runner) Start(ctx context.Context) error {
+	if r.cfg.Driver != DriverKafka || !r.cfg.Enabled {
+		r.log.Info("invalidation runner disabled", "driver", r.cfg.Driver, "enabled", r.cfg.Enabled)
+		return nil
+	}
+	if r.cache == nil {
+		return errors.New("kafka runner: cache dependency is required")
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+
+	cfg := sarama.NewConfig()
+	cfg.Version = sarama.V2_5_0_0
+	cfg.Consumer.Group.Session.Timeout = r.cfg.SessionTimeout
+	cfg.Consumer.Group.Heartbeat.Interval = r.cfg.Heartbeat
+	cfg.Consumer.Group.Rebalance.Timeout = r.cfg.RebalanceTimeout
+	if r.cfg.InitialOldest {
+		cfg.Consumer.Offsets.Initial = sarama.OffsetOldest
+	} else {
+		cfg.Consumer.Offsets.Initial = sarama.OffsetNewest
+	}
+	cfg.Consumer.Return.Errors = true
+
+	group, err := sarama.NewConsumerGroup(r.cfg.Brokers, r.cfg.GroupID, cfg)
+	if err != nil {
+		return fmt.Errorf("consumer group: %w", err)
+	}
+
+	h := &groupHandler{
+		setup: func(sess sarama.ConsumerGroupSession) {
+			claims := sess.Claims()
+			r.assignMu.Lock()
+			r.assigned.Store(true)
+			r.assign = map[int32]struct{}{}
+			for _, parts := range claims {
+				for _, p := range parts {
+					r.assign[p] = struct{}{}
+				}
+			}
+			r.assignMu.Unlock()
+		},
+		cleanup: func(sarama.ConsumerGroupSession) {
+			r.assignMu.Lock()
+			r.assigned.Store(false)
+			r.assign = map[int32]struct{}{}
+			r.assignMu.Unlock()
+		},
+		process: r.handleMessage,
+	}
+
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		defer func() {
+			if err := group.Close(); err != nil {
+				r.log.Error("kafka consumer group close", "err", err)
+			}
+		}()
+
+		for {
+			if err := group.Consume(ctx, []string{r.cfg.Topic}, h); err != nil {
+				r.log.Error("kafka consume error", "err", err)
+				select {
+				case <-time.After(2 * time.Second):
+				case <-ctx.Done():
+					return
+				}
+			}
+			if ctx.Err() != nil {
+				return
+			}
+		}
+	}()
+
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		for err := range group.Errors() {
+			r.log.Error("kafka group error", "err", err)
+		}
+	}()
+
+	r.log.Info("kafka invalidation runner started",
+		"topic", r.cfg.Topic, "group", r.cfg.GroupID, "brokers", r.cfg.Brokers)
+	return nil
+}
+
+func (r *Runner) Stop() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+	r.wg.Wait()
+	r.log.Info("kafka invalidation runner stopped")
+}
+
+func (r *Runner) Readiness() (ready bool, partitions []int32) {
+	if !r.assigned.Load() {
+		return false, nil
+	}
+	r.assignMu.RLock()
+	defer r.assignMu.RUnlock()
+	for p := range r.assign {
+		partitions = append(partitions, p)
+	}
+	return true, partitions
+}
+
+func (r *Runner) handleMessage(ctx context.Context, msg *sarama.ConsumerMessage) error {
+	start := time.Now()
+
+	if !msg.Timestamp.IsZero() {
+		r.ms.lagGauge.Set(time.Since(msg.Timestamp).Seconds())
+	}
+
+	var w WireEvent
+	if err := json.Unmarshal(msg.Value, &w); err == nil && (w.Key != "" || len(w.H3Cells) > 0) {
+		err := r.applyWire(ctx, w)
+		r.observe(w.Op, err, time.Since(start))
+		return err
+	}
+
+	var ev invalidation.Event
+	if err := json.Unmarshal(msg.Value, &ev); err != nil {
+		r.ms.msgs.WithLabelValues("error").Inc()
+		return fmt.Errorf("decode: %w", err)
+	}
+	if err := ev.Validate(); err != nil {
+		r.ms.msgs.WithLabelValues("error").Inc()
+		return fmt.Errorf("validate: %w", err)
+	}
+	err := r.applySpatial(ctx, ev)
+	r.observe(ev.Op, err, time.Since(start))
+	return err
+}
+
+func (r *Runner) observe(op string, err error, dur time.Duration) {
+	if op == "" {
+		op = "unknown"
+	}
+	if err != nil {
+		r.ms.msgs.WithLabelValues("error").Inc()
+	} else {
+		r.ms.msgs.WithLabelValues("ok").Inc()
+	}
+	r.ms.proc.WithLabelValues(op).Observe(dur.Seconds())
+}
+
+func (r *Runner) applyWire(_ context.Context, w WireEvent) error {
+	var keysToDel []string
+
+	if w.Key != "" {
+		keysToDel = append(keysToDel, w.Key)
+	} else {
+		res := r.resRange
+		if len(w.Resolutions) > 0 {
+			res = w.Resolutions
+		}
+		for _, cell := range w.H3Cells {
+			for _, rr := range res {
+				keysToDel = append(keysToDel, keys.Key(w.Layer, rr, cell, ""))
+			}
+		}
+	}
+
+	applied := 0
+	for _, k := range keysToDel {
+		if !r.ver.shouldApply(k, w.Version) {
+			r.ms.apply.WithLabelValues("skip_version").Inc()
+			continue
+		}
+		applied++
+	}
+	if applied == 0 {
+		return nil
+	}
+	if err := r.cache.Del(keysToDel...); err != nil {
+		return fmt.Errorf("redis del (%d keys): %w", len(keysToDel), err)
+	}
+	r.ms.apply.WithLabelValues("delete").Add(float64(applied))
+	return nil
+}
+
+func (r *Runner) applySpatial(_ context.Context, ev invalidation.Event) error {
+	cellRes := 0
+	for _, rr := range r.resRange {
+		if rr > cellRes {
+			cellRes = rr
+		}
+	}
+	var cells model.Cells
+	switch {
+	case ev.BBox != nil:
+		b := model.BBox{X1: ev.BBox.X1, Y1: ev.BBox.Y1, X2: ev.BBox.X2, Y2: ev.BBox.Y2, SRID: ev.BBox.SRID}
+		c, err := r.mapper.CellsForBBox(b, cellRes)
+		if err != nil {
+			return fmt.Errorf("CellsForBBox: %w", err)
+		}
+		cells = c
+	default:
+		c, err := r.mapper.CellsForPolygon(model.Polygon{GeoJSON: string(ev.Geometry)}, cellRes)
+		if err != nil {
+			return fmt.Errorf("CellsForPolygon: %w", err)
+		}
+		cells = c
+	}
+	if len(cells) == 0 {
+		return nil
+	}
+	var ks []string
+	for _, rr := range r.resRange {
+		for _, c := range cells {
+			ks = append(ks, keys.Key(ev.Layer, rr, c, ""))
+		}
+	}
+	if err := r.cache.Del(ks...); err != nil {
+		return fmt.Errorf("redis del (%d keys): %w", len(ks), err)
+	}
+	r.ms.apply.WithLabelValues("delete").Add(float64(len(ks)))
+	return nil
+}
+
+type groupHandler struct {
+	setup   func(sarama.ConsumerGroupSession)
+	cleanup func(sarama.ConsumerGroupSession)
+	process func(context.Context, *sarama.ConsumerMessage) error
+}
+
+func (h *groupHandler) Setup(sess sarama.ConsumerGroupSession) error {
+	if h.setup != nil {
+		h.setup(sess)
+	}
+	return nil
+}
+
+func (h *groupHandler) Cleanup(sess sarama.ConsumerGroupSession) error {
+	if h.cleanup != nil {
+		h.cleanup(sess)
+	}
+	return nil
+}
+
+func (h *groupHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
+	ctx := sess.Context()
+	for msg := range claim.Messages() {
+		if err := h.process(ctx, msg); err != nil {
+			return err
+		}
+		sess.MarkMessage(msg, "")
+	}
+	return nil
+}

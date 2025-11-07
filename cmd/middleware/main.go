@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -13,18 +14,33 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/health"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/httpclient"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/ogc"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/server"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/logger"
+	mapperh3 "github.com/mohammed-shakir/h3-spatial-cache/internal/mapper/h3"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/metrics"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios"
 	_ "github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios/baseline"
 	_ "github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios/cache"
+	invkafka "github.com/mohammed-shakir/h3-spatial-cache/pkg/invalidation/kafka"
 )
+
+type consumerCache struct {
+	base    context.Context
+	inner   *redisstore.Client
+	timeout time.Duration
+}
+
+func (c consumerCache) MGet(_ []string) (map[string][]byte, error)    { return nil, nil }
+func (c consumerCache) Set(_ string, _ []byte, _ time.Duration) error { return nil }
 
 var Version = "dev"
 
@@ -39,6 +55,19 @@ func envInt(k string, def int) int {
 		}
 	}
 	return def
+}
+
+func (c consumerCache) Del(keys ...string) error {
+	ctx := c.base
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
+	}
+	if err := c.inner.Del(ctx, keys...); err != nil {
+		return fmt.Errorf("redis del: %w", err)
+	}
+	return nil
 }
 
 func run() int {
@@ -89,6 +118,7 @@ func run() int {
 	defer stop()
 
 	metricsEnabled := os.Getenv("METRICS_ENABLED") == "true"
+	var promReg prometheus.Registerer
 	if metricsEnabled {
 		addr := os.Getenv("METRICS_ADDR")
 		if addr == "" {
@@ -112,6 +142,7 @@ func run() int {
 		})
 
 		observability.Init(p.Registerer(), true)
+		promReg = p.Registerer()
 		observability.SetScenario(cfg.Scenario)
 		observability.ExposeBuildInfo(Version)
 
@@ -150,7 +181,39 @@ func run() int {
 		observability.Init(nil, false)
 	}
 
-	if err := server.Run(ctx, cfg, appLog, handler); err != nil {
+	var readinessReporter health.ReadinessReporter
+	if strings.ToLower(cfg.Invalidation.Driver) == "kafka" && cfg.Invalidation.Enabled {
+		rcli, err := redisstore.New(ctx, cfg.RedisAddr)
+		if err != nil {
+			appLog.Error("invalidation: redis connect failed", "err", err)
+		} else {
+			h3m := mapperh3.New()
+
+			resRange := []int{cfg.H3ResMin}
+			for r := cfg.H3ResMin + 1; r <= cfg.H3ResMax; r++ {
+				resRange = append(resRange, r)
+			}
+
+			invCfg := invkafka.FromEnv()
+
+			delCache := consumerCache{base: ctx, inner: rcli, timeout: cfg.CacheOpTimeout}
+
+			runner := invkafka.New(invCfg, delCache, h3m, invkafka.Options{
+				Logger:   appLog,
+				Register: promReg,
+				ResRange: resRange,
+			})
+
+			go func() {
+				if err := runner.Start(ctx); err != nil {
+					appLog.Error("invalidation runner exited", "err", err)
+				}
+			}()
+			readinessReporter = runner
+		}
+	}
+
+	if err := server.Run(ctx, cfg, appLog, handler, readinessReporter); err != nil {
 		appLog.Error("server exited with error", "err", err)
 		return 1
 	}

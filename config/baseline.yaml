@@ -1,0 +1,4 @@
+scenario: baseline
+cache_invalidation:
+  enabled: false
+  driver: "none"

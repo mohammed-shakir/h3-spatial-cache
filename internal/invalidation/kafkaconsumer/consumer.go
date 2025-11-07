@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IBM/sarama"
@@ -36,6 +38,9 @@ type Consumer struct {
 	hot      HotnessResetter
 	resRange []int
 	zlog     *zerolog.Logger
+	assigned atomic.Bool
+	assignMu sync.RWMutex
+	assign   map[int32]struct{}
 }
 
 func New(cfg Config, logger *slog.Logger, c cache.Interface, mapper CellMapper, hot HotnessResetter, resRange []int) *Consumer {
@@ -49,6 +54,7 @@ func New(cfg Config, logger *slog.Logger, c cache.Interface, mapper CellMapper, 
 		mapper:   mapper,
 		hot:      hot,
 		resRange: resRange,
+		assign:   map[int32]struct{}{},
 	}
 }
 
@@ -84,7 +90,27 @@ func (c *Consumer) Start(ctx context.Context) error {
 	}, nil)
 	c.zlog = mylog.FromContext(base, &zl)
 
-	handler := &groupHandler{process: c.ProcessOne}
+	handler := &groupHandler{
+		process: c.ProcessOne,
+		setup: func(sess sarama.ConsumerGroupSession) {
+			claims := sess.Claims()
+			c.assignMu.Lock()
+			c.assigned.Store(true)
+			c.assign = map[int32]struct{}{}
+			for _, parts := range claims {
+				for _, p := range parts {
+					c.assign[p] = struct{}{}
+				}
+			}
+			c.assignMu.Unlock()
+		},
+		cleanup: func(sarama.ConsumerGroupSession) {
+			c.assignMu.Lock()
+			c.assigned.Store(false)
+			c.assign = map[int32]struct{}{}
+			c.assignMu.Unlock()
+		},
+	}
 
 	c.logger.Info("kafka invalidation consumer starting",
 		"brokers", c.cfg.Brokers, "topic", c.cfg.Topic, "group", c.cfg.GroupID)
@@ -105,6 +131,19 @@ func (c *Consumer) Start(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (c *Consumer) Readiness() (bool, []int32) {
+	if !c.assigned.Load() {
+		return false, nil
+	}
+	c.assignMu.RLock()
+	defer c.assignMu.RUnlock()
+	parts := make([]int32, 0, len(c.assign))
+	for p := range c.assign {
+		parts = append(parts, p)
+	}
+	return true, parts
 }
 
 // process a single invalidation event message

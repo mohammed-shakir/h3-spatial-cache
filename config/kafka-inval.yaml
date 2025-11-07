@@ -1,0 +1,7 @@
+scenario: ttl_cache
+cache_invalidation:
+  enabled: true
+  driver: "kafka"
+  brokers: ["localhost:9092"]
+  topic: "spatial-invalidation"
+  group_id: "cache-invalidator"

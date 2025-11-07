@@ -7,6 +7,14 @@ import (
 	"time"
 )
 
+type InvalidationCfg struct {
+	Enabled bool
+	Driver  string
+	Topic   string
+	Brokers string
+	GroupID string
+}
+
 type Config struct {
 	Addr                string
 	LogLevel            string
@@ -24,6 +32,7 @@ type Config struct {
 	CacheTTLOvr         map[string]time.Duration
 	CacheFillMaxWorkers int
 	CacheFillQueue      int
+	Invalidation        InvalidationCfg
 }
 
 func FromEnv() Config {
@@ -58,6 +67,13 @@ func FromEnv() Config {
 		CacheTTLOvr:         parseDurationMap(getenv("CACHE_TTL_OVERRIDES", "")),
 		CacheFillMaxWorkers: getint("CACHE_FILL_MAX_WORKERS", 8),
 		CacheFillQueue:      getint("CACHE_FILL_QUEUE", 64),
+		Invalidation: InvalidationCfg{
+			Enabled: strings.ToLower(getenv("INVALIDATION_ENABLED", "false")) == "true",
+			Driver:  getenv("INVALIDATION_DRIVER", "none"),
+			Topic:   getenv("KAFKA_TOPIC", "spatial-invalidation"),
+			Brokers: getenv("KAFKA_BROKERS", "localhost:9092"),
+			GroupID: getenv("KAFKA_GROUP_ID", "cache-invalidator"),
+		},
 	}
 }
 

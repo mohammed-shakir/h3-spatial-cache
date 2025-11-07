@@ -17,13 +17,16 @@ import (
 )
 
 // sets up http and starts serving
-func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, handler router.QueryHandler) error {
+func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, handler router.QueryHandler, rr health.ReadinessReporter) error {
 	r := chi.NewRouter()
 	r.Use(middleware.Recover())
 	r.Use(middleware.Logging(logger))
 	r.Use(middleware.CORS())
 
 	r.Get("/healthz", health.Liveness())
+	if rr != nil {
+		r.Get("/health/ready", health.Readiness(rr))
+	}
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/query", router.HandleQuery(logger, cfg, handler))
 

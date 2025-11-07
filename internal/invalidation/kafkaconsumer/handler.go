@@ -12,10 +12,23 @@ type messageProcessor func(context.Context, *sarama.ConsumerMessage) error
 
 type groupHandler struct {
 	process messageProcessor
+	setup   func(sarama.ConsumerGroupSession)
+	cleanup func(sarama.ConsumerGroupSession)
 }
 
-func (h *groupHandler) Setup(s sarama.ConsumerGroupSession) error   { return nil }
-func (h *groupHandler) Cleanup(s sarama.ConsumerGroupSession) error { return nil }
+func (h *groupHandler) Setup(s sarama.ConsumerGroupSession) error {
+	if h.setup != nil {
+		h.setup(s)
+	}
+	return nil
+}
+
+func (h *groupHandler) Cleanup(s sarama.ConsumerGroupSession) error {
+	if h.cleanup != nil {
+		h.cleanup(s)
+	}
+	return nil
+}
 
 func (h *groupHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	ctx := sess.Context()
