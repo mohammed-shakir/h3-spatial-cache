@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"sort"
 
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
@@ -27,6 +29,7 @@ type Engine struct {
 	hot    hotness.Interface
 	dec    decision.Interface
 	thr    float64
+	eng    composer.Engine
 }
 
 func init() {
@@ -47,6 +50,9 @@ func newBaseline(cfg config.Config, logger *slog.Logger, exec executor.Interface
 		hot: hot,
 		dec: dec,
 		thr: cfg.HotThreshold,
+		eng: composer.Engine{
+			V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced()),
+		},
 	}, nil
 }
 
@@ -108,5 +114,29 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	q.H3Res = e.res
 	q.Cells = cells
-	e.exec.ForwardWFS(ctx, w, r, q)
+	body, _, err := e.exec.FetchGetFeature(ctx, q)
+	if err != nil {
+		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	req := composer.Request{
+		Query: composer.QueryParams{
+			Limit:  0,
+			Offset: 0,
+		},
+		Pages: []composer.ShardPage{
+			{Body: body, CacheStatus: composer.CacheMiss},
+		},
+		AcceptHeader: r.Header.Get("Accept"),
+		OutputFormat: r.URL.Query().Get("outputFormat"),
+	}
+	res, err := composer.Compose(ctx, e.eng, req)
+	if err != nil {
+		http.Error(w, "compose error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", res.ContentType)
+	w.WriteHeader(res.StatusCode)
+	_, _ = w.Write(res.Body)
 }

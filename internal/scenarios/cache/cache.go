@@ -14,11 +14,11 @@ import (
 
 	h3 "github.com/uber/h3-go/v4"
 
-	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
 	cacheiface "github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/httpclient"
@@ -35,7 +35,7 @@ type Engine struct {
 	res    int
 
 	mapr *h3mapper.Mapper
-	agg  aggregate.Interface
+	eng  composer.Engine
 
 	store cacheiface.Interface
 
@@ -70,7 +70,9 @@ func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (rou
 		res:    cfg.H3Res,
 
 		mapr: h3mapper.New(),
-		agg:  geojsonagg.New(true),
+		eng: composer.Engine{
+			V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced()),
+		},
 
 		store: newCacheAdapter(rc, cfg.CacheOpTimeout),
 
@@ -147,7 +149,20 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 	if len(cells) == 0 {
-		e.writeJSON(w, []byte(`{"type":"FeatureCollection","features":[]}`))
+		req := composer.Request{
+			Query:        composer.QueryParams{Limit: 0, Offset: 0},
+			Pages:        nil,
+			AcceptHeader: r.Header.Get("Accept"),
+			OutputFormat: r.URL.Query().Get("outputFormat"),
+		}
+		res, err := composer.Compose(r.Context(), e.eng, req)
+		if err != nil {
+			http.Error(w, "compose error: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", res.ContentType)
+		w.WriteHeader(res.StatusCode)
+		_, _ = w.Write(res.Body)
 		return
 	}
 
@@ -164,27 +179,38 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	// separate hits and misses
-	parts := make([][]byte, 0, len(hits))
+	pages := make([]composer.ShardPage, 0, len(keysList))
 	missing := make([]string, 0, len(keysList))
 	for i, k := range keysList {
 		if v, ok := hits[k]; ok && len(v) > 0 {
-			parts = append(parts, v)
+			pages = append(pages, composer.ShardPage{Body: v, CacheStatus: composer.CacheHit})
 			continue
 		}
 		missing = append(missing, cells[i])
 	}
 
 	if len(missing) == 0 {
-		body, mErr := e.agg.Merge(parts)
-		if mErr != nil {
-			http.Error(w, "failed to merge cached parts: "+mErr.Error(), http.StatusBadGateway)
+		req := composer.Request{
+			Query: composer.QueryParams{
+				Limit:  0,
+				Offset: 0,
+			},
+			Pages:        pages,
+			AcceptHeader: r.Header.Get("Accept"),
+			OutputFormat: r.URL.Query().Get("outputFormat"),
+		}
+		res, err := composer.Compose(r.Context(), e.eng, req)
+		if err != nil {
+			http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		e.writeJSON(w, body)
-		observability.AddCacheHits(len(parts))
+		w.Header().Set("Content-Type", res.ContentType)
+		w.WriteHeader(res.StatusCode)
+		_, _ = w.Write(res.Body)
+		observability.AddCacheHits(len(pages))
 		e.logger.Info("cache full-hit",
 			"layer", q.Layer, "res", e.res,
-			"cells", len(cells), "hits", len(parts), "misses", 0,
+			"cells", len(cells), "hits", len(pages), "misses", 0,
 			"ttl_used", e.ttlFor(q.Layer).String(),
 			"dur", time.Since(start).String())
 		return
@@ -252,11 +278,8 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	observability.AddCacheMisses(len(missing))
 
-	parts = append(parts, fetched...)
-	body, mErr := e.agg.Merge(parts)
-	if mErr != nil {
-		http.Error(w, "failed to merge parts: "+mErr.Error(), http.StatusBadGateway)
-		return
+	for _, b := range fetched {
+		pages = append(pages, composer.ShardPage{Body: b, CacheStatus: composer.CacheMiss})
 	}
 
 	if len(errs) > 0 {
@@ -273,19 +296,29 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	e.writeJSON(w, body)
+	req := composer.Request{
+		Query: composer.QueryParams{
+			Limit:  0,
+			Offset: 0,
+		},
+		Pages:        pages,
+		AcceptHeader: r.Header.Get("Accept"),
+		OutputFormat: r.URL.Query().Get("outputFormat"),
+	}
+	res, err := composer.Compose(r.Context(), e.eng, req)
+	if err != nil {
+		http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", res.ContentType)
+	w.WriteHeader(res.StatusCode)
+	_, _ = w.Write(res.Body)
 	e.logger.Info("cache partial-miss filled",
 		"layer", q.Layer, "res", e.res,
-		"cells", len(cells), "hits", len(parts), "misses", len(missing),
+		"cells", len(cells), "hits", len(pages)-len(fetched), "misses", len(missing),
 		"ttl_used", ttl.String(),
 		"fill_dur", time.Since(fillStart).String(),
 		"total_dur", time.Since(start).String())
-}
-
-func (e *Engine) writeJSON(w http.ResponseWriter, body []byte) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
 }
 
 func (e *Engine) cellsFor(q model.QueryRequest) (model.Cells, error) {

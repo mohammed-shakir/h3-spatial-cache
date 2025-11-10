@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/ogc"
 	simpledec "github.com/mohammed-shakir/h3-spatial-cache/internal/decision/simple"
@@ -46,6 +48,13 @@ func equalValues2(a, b url.Values) bool {
 		}
 	}
 	return true
+}
+
+func (f *execRecorder) FetchGetFeature(ctx context.Context, q model.QueryRequest) ([]byte, string, error) {
+	_ = ctx
+	f.lastQ = q
+	f.lastParams = ogc.BuildGetFeatureParams(q)
+	return []byte(`{"type":"FeatureCollection","features":[]}`), "application/geo+json", nil
 }
 
 type fakeHot struct {
@@ -96,6 +105,8 @@ func TestBaseline_Decision_DoesNotAlterParams_AndLogsShouldCache(t *testing.T) {
 		thr:    thr,
 	}
 
+	e.eng = composer.Engine{V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced())}
+
 	inQ := model.QueryRequest{
 		Layer: "demo:NR_polygon",
 		BBox:  &model.BBox{X1: 11, Y1: 55, X2: 12, Y2: 56, SRID: "EPSG:4326"},
@@ -106,8 +117,8 @@ func TestBaseline_Decision_DoesNotAlterParams_AndLogsShouldCache(t *testing.T) {
 	rr := httptest.NewRecorder()
 	e.HandleQuery(req.Context(), rr, req, inQ)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status=%d want 204", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rr.Code)
 	}
 	if !equalValues2(exec.lastParams, wantParams) {
 		t.Fatalf("upstream params changed unexpectedly.\n got: %s\nwant: %s", exec.lastParams.Encode(), wantParams.Encode())

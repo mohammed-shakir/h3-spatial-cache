@@ -46,6 +46,13 @@ func equalValues(a, b url.Values) bool {
 	return true
 }
 
+func (f *fakeExec) FetchGetFeature(ctx context.Context, q model.QueryRequest) ([]byte, string, error) {
+	_ = ctx
+	f.lastQ = q
+	f.lastParams = ogc.BuildGetFeatureParams(q)
+	return []byte(`{"type":"FeatureCollection","features":[]}`), "application/geo+json", nil
+}
+
 func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 	cfg := config.FromEnv()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -68,8 +75,8 @@ func TestBaseline_H3ContextForBBox_IsPopulated_AndTransparent(t *testing.T) {
 	e.HandleQuery(context.Background(), rr, req, inQ)
 
 	// confirm h3 metadata was added
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status=%d want 204", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rr.Code)
 	}
 	if fx.lastQ.H3Res != cfg.H3Res {
 		t.Fatalf("H3Res=%d want %d", fx.lastQ.H3Res, cfg.H3Res)
@@ -105,8 +112,8 @@ func TestBaseline_H3ContextForPolygon_IsPopulated_AndTransparent(t *testing.T) {
 
 	e.HandleQuery(context.Background(), rr, req, inQ)
 
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status=%d want 204", rr.Code)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200", rr.Code)
 	}
 	if fx.lastQ.H3Res != cfg.H3Res {
 		t.Fatalf("H3Res=%d want %d", fx.lastQ.H3Res, cfg.H3Res)
