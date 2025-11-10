@@ -26,28 +26,35 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/ogc"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/router"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/hotness/expdecay"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/hotness/metricswrap"
 	h3mapper "github.com/mohammed-shakir/h3-spatial-cache/internal/mapper/h3"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/scenarios"
+	"github.com/mohammed-shakir/h3-spatial-cache/pkg/adaptive"
+	adaptSimple "github.com/mohammed-shakir/h3-spatial-cache/pkg/adaptive/simple"
 )
 
 type Engine struct {
-	logger *slog.Logger
-	res    int
-
-	mapr *h3mapper.Mapper
-	eng  composer.Engine
-
-	store cacheiface.Interface
-
-	owsURL *url.URL
-	http   *http.Client
-
-	ttlDefault time.Duration
-	ttlMap     map[string]time.Duration
-
-	maxWorkers int
-	queueSize  int
-	opTimeout  time.Duration
+	logger          *slog.Logger
+	res             int
+	minRes          int
+	maxRes          int
+	mapr            *h3mapper.Mapper
+	eng             composer.Engine
+	store           cacheiface.Interface
+	owsURL          *url.URL
+	http            *http.Client
+	ttlDefault      time.Duration
+	ttlMap          map[string]time.Duration
+	maxWorkers      int
+	queueSize       int
+	opTimeout       time.Duration
+	adaptiveEnabled bool
+	adaptiveDryRun  bool
+	serveFreshOnly  bool
+	decider         adaptive.Decider
+	hot             *metricswrap.WithMetrics
+	runID           string
 }
 
 func init() {
@@ -65,9 +72,12 @@ func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (rou
 	if err != nil {
 		return nil, fmt.Errorf("parse ows url: %w", err)
 	}
-	return &Engine{
+
+	e := &Engine{
 		logger: logger,
 		res:    cfg.H3Res,
+		minRes: cfg.H3ResMin,
+		maxRes: cfg.H3ResMax,
 
 		mapr: h3mapper.New(),
 		eng: composer.Engine{
@@ -85,7 +95,34 @@ func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (rou
 		maxWorkers: cfg.CacheFillMaxWorkers,
 		queueSize:  cfg.CacheFillQueue,
 		opTimeout:  cfg.CacheOpTimeout,
-	}, nil
+
+		adaptiveEnabled: cfg.AdaptiveEnabled,
+		adaptiveDryRun:  cfg.AdaptiveDryRun,
+		serveFreshOnly:  cfg.AdaptiveServeOnlyIfFresh,
+		runID:           fmt.Sprintf("%016x", cfg.AdaptiveSeed),
+	}
+
+	// Adaptive: construct hotness tracker and decider (but respect feature flag).
+	if e.adaptiveEnabled {
+		tr := expdecay.New(cfg.HotHalfLife)
+		e.hot = metricswrap.New(tr, "topN")
+		e.decider = adaptSimple.New(
+			adaptSimple.Config{
+				Threshold: cfg.HotThreshold,
+				BaseRes:   cfg.H3Res,
+				MinRes:    cfg.H3ResMin,
+				MaxRes:    cfg.H3ResMax,
+				TTLCold:   cfg.AdaptiveTTLCold,
+				TTLWarm:   cfg.AdaptiveTTLWarm,
+				TTLHot:    cfg.AdaptiveTTLHot,
+				Seed:      cfg.AdaptiveSeed,
+			},
+			hotReadOnly{w: e.hot},
+			e.mapr,
+		)
+	}
+
+	return e, nil
 }
 
 type cacheAdapter struct {
@@ -142,7 +179,9 @@ type result struct {
 
 func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http.Request, q model.QueryRequest) {
 	start := time.Now()
-	cells, err := e.cellsFor(q)
+
+	// map footprint to cells at base resolution
+	cells, err := e.cellsForRes(q, e.res)
 	if err != nil {
 		e.logger.Error("h3 mapping failed", "err", err)
 		http.Error(w, "failed to map query footprint", http.StatusBadRequest)
@@ -166,19 +205,99 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// build redis keys for all h3 cells
-	keysList := make([]string, 0, len(cells))
-	for _, c := range cells {
-		keysList = append(keysList, keys.Key(q.Layer, e.res, c, q.Filters))
+	// hotness hooks (cheap, sharded)
+	if e.adaptiveEnabled && e.hot != nil {
+		for _, c := range cells {
+			e.hot.Inc(c)
+			observability.ObserveHotnessValueSample(c, e.hot.Score(c))
+		}
 	}
 
-	hits, err := e.store.MGet(keysList)
-	if err != nil {
-		e.logger.Warn("cache mget error, continuing with fetch path", "err", err)
+	// decision
+	dec := adaptive.Decision{Type: adaptive.DecisionFill, Resolution: e.res, TTL: e.ttlFor(q.Layer)}
+	reason := adaptive.ReasonDefaultFill
+	applyDecision := e.adaptiveEnabled && !e.adaptiveDryRun && e.decider != nil
+	if e.adaptiveEnabled && e.decider != nil {
+		decideStart := time.Now()
+		d, r := e.decider.Decide(adaptive.Query{
+			Layer:   q.Layer,
+			Cells:   cells,
+			BaseRes: e.res,
+			MinRes:  e.minRes,
+			MaxRes:  e.maxRes,
+		}, hotReadOnly{w: e.hot})
+		dec, reason = d, r
+
+		observability.ObserveAdaptiveDecision(decisionLabel(dec.Type), string(reason))
+		e.logger.Info("adaptive_decision",
+			"run_id", e.runID, "layer", q.Layer,
+			"decision", decisionLabel(dec.Type), "reason", string(reason),
+			"resolution", dec.Resolution, "ttl", dec.TTL.String(),
+			"cells", len(cells),
+			"dry_run", e.adaptiveDryRun,
+			"dur", time.Since(decideStart).String())
+	}
+
+	// apply resolution and TTL based on decision
+	resToUse := e.res
+	if applyDecision {
+		resToUse = dec.Resolution
+	}
+	ttl := e.ttlFor(q.Layer)
+	if applyDecision && dec.TTL > 0 {
+		ttl = dec.TTL
+	}
+
+	// remap cells if resolution changed
+	if resToUse != e.res {
+		cells, err = e.cellsForRes(q, resToUse)
+		if err != nil {
+			http.Error(w, "failed to compute cells for adaptive resolution", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// choose path based on decision type
+	useLookup := true
+	writeFill := true
+	serveOnlyIfFresh := false
+
+	switch dec.Type {
+	case adaptive.DecisionBypass:
+		if applyDecision {
+			useLookup = false
+			writeFill = false
+			ttl = 0
+		}
+	case adaptive.DecisionServeOnlyIfFresh:
+		if applyDecision {
+			serveOnlyIfFresh = true
+		}
+	case adaptive.DecisionFill:
+		// normal path
+	}
+
+	// build keys for the selected resolution
+	keysList := make([]string, 0, len(cells))
+	for _, c := range cells {
+		keysList = append(keysList, keys.Key(q.Layer, resToUse, c, q.Filters))
+	}
+
+	// cache lookup
+	var hits map[string][]byte
+	if useLookup {
+		m, err := e.store.MGet(keysList)
+		if err != nil {
+			e.logger.Warn("cache mget error, continuing with fetch path", "err", err)
+			hits = map[string][]byte{}
+		} else {
+			hits = m
+		}
+	} else {
 		hits = map[string][]byte{}
 	}
 
-	// separate hits and misses
+	// separate hits/misses
 	pages := make([]composer.ShardPage, 0, len(keysList))
 	missing := make([]string, 0, len(keysList))
 	for i, k := range keysList {
@@ -189,14 +308,15 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		missing = append(missing, cells[i])
 	}
 
+	if serveOnlyIfFresh && len(missing) > 0 {
+		http.Error(w, "fresh content required but not fully cached", http.StatusPreconditionFailed)
+		return
+	}
+
 	if len(missing) == 0 {
 		req := composer.Request{
-			Query: composer.QueryParams{
-				Limit:  0,
-				Offset: 0,
-			},
-			Pages:        pages,
-			AcceptHeader: r.Header.Get("Accept"),
+			Query: composer.QueryParams{Limit: 0, Offset: 0},
+			Pages: pages, AcceptHeader: r.Header.Get("Accept"),
 			OutputFormat: r.URL.Query().Get("outputFormat"),
 		}
 		res, err := composer.Compose(r.Context(), e.eng, req)
@@ -209,16 +329,15 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		_, _ = w.Write(res.Body)
 		observability.AddCacheHits(len(pages))
 		e.logger.Info("cache full-hit",
-			"layer", q.Layer, "res", e.res,
+			"layer", q.Layer, "res", resToUse,
 			"cells", len(cells), "hits", len(pages), "misses", 0,
-			"ttl_used", e.ttlFor(q.Layer).String(),
-			"dur", time.Since(start).String())
+			"ttl_used", ttl.String(),
+			"dur", time.Since(start).String(),
+			"decision", decisionLabel(dec.Type), "reason", string(reason), "run_id", e.runID)
 		return
 	}
 
 	fillStart := time.Now()
-
-	ttl := e.ttlFor(q.Layer)
 	jobs := make(chan string, e.queueSize)
 	results := make(chan result, len(missing))
 
@@ -229,7 +348,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	var wg sync.WaitGroup
 	wg.Add(workerN)
 
-	// worker pool getting missing h3 cells and filling cache
 	for range workerN {
 		go func() {
 			defer wg.Done()
@@ -239,8 +357,8 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 					return
 				default:
 				}
-				res := e.fetchCell(ctx, q, cell)
-				if res.err == nil && len(res.body) > 0 {
+				res := e.fetchCell(ctx, q, cell, resToUse)
+				if res.err == nil && len(res.body) > 0 && writeFill {
 					_ = e.store.Set(res.key, res.body, ttl)
 				}
 				select {
@@ -297,12 +415,8 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	req := composer.Request{
-		Query: composer.QueryParams{
-			Limit:  0,
-			Offset: 0,
-		},
-		Pages:        pages,
-		AcceptHeader: r.Header.Get("Accept"),
+		Query: composer.QueryParams{Limit: 0, Offset: 0},
+		Pages: pages, AcceptHeader: r.Header.Get("Accept"),
 		OutputFormat: r.URL.Query().Get("outputFormat"),
 	}
 	res, err := composer.Compose(r.Context(), e.eng, req)
@@ -313,24 +427,25 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", res.ContentType)
 	w.WriteHeader(res.StatusCode)
 	_, _ = w.Write(res.Body)
-	e.logger.Info("cache partial-miss filled",
-		"layer", q.Layer, "res", e.res,
+	e.logger.Info("cache partial-miss",
+		"layer", q.Layer, "res", resToUse,
 		"cells", len(cells), "hits", len(pages)-len(fetched), "misses", len(missing),
 		"ttl_used", ttl.String(),
 		"fill_dur", time.Since(fillStart).String(),
-		"total_dur", time.Since(start).String())
+		"total_dur", time.Since(start).String(),
+		"decision", decisionLabel(dec.Type), "reason", string(reason), "run_id", e.runID)
 }
 
-func (e *Engine) cellsFor(q model.QueryRequest) (model.Cells, error) {
+func (e *Engine) cellsForRes(q model.QueryRequest, res int) (model.Cells, error) {
 	switch {
 	case q.Polygon != nil:
-		c, err := e.mapr.CellsForPolygon(*q.Polygon, e.res)
+		c, err := e.mapr.CellsForPolygon(*q.Polygon, res)
 		if err != nil {
 			return nil, fmt.Errorf("h3 polygon cells: %w", err)
 		}
 		return c, nil
 	case q.BBox != nil:
-		c, err := e.mapr.CellsForBBox(*q.BBox, e.res)
+		c, err := e.mapr.CellsForBBox(*q.BBox, res)
 		if err != nil {
 			return nil, fmt.Errorf("h3 bbox cells: %w", err)
 		}
@@ -357,8 +472,8 @@ func (e *Engine) ttlFor(layer string) time.Duration {
 }
 
 // fetches a single h3 cell from geoserver
-func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string) result {
-	key := keys.Key(q.Layer, e.res, cell, q.Filters)
+func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int) result {
+	key := keys.Key(q.Layer, res, cell, q.Filters)
 
 	cellPolyJSON, err := cellPolygonGeoJSON(cell)
 	if err != nil {
@@ -425,4 +540,25 @@ func cellPolygonGeoJSON(cellStr string) (string, error) {
 	}
 	coords = append(coords, coords[0])
 	return `{"type":"Polygon","coordinates":[[` + strings.Join(coords, ",") + `]]}`, nil
+}
+
+// read-only hotness view handed to the decider
+type hotReadOnly struct{ w *metricswrap.WithMetrics }
+
+func (h hotReadOnly) Score(cell string) float64 {
+	if h.w == nil {
+		return 0
+	}
+	return h.w.Score(cell)
+}
+
+func decisionLabel(t adaptive.DecisionType) string {
+	switch t {
+	case adaptive.DecisionBypass:
+		return "bypass"
+	case adaptive.DecisionServeOnlyIfFresh:
+		return "serve_only_if_fresh"
+	default:
+		return "fill"
+	}
 }

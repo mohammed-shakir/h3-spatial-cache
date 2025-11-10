@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	xx "github.com/cespare/xxhash/v2"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -63,117 +64,91 @@ var (
 	invDeletedKeys                 *prometheus.CounterVec
 	invLatency                     *prometheus.HistogramVec
 	kafkaConsumerErrorsTotal       *prometheus.CounterVec
+	adaptiveDecisionsTotal         *prometheus.CounterVec
+	hotnessValueGauge              *prometheus.GaugeVec
 )
 
 func initCollectors(r prometheus.Registerer) {
 	httpRequestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "http_requests_total",
-			Help: "Total number of HTTP requests.",
-		}, []string{"method", "route", "status", "scenario"},
+		prometheus.CounterOpts{Name: "http_requests_total", Help: "Total number of HTTP requests."},
+		[]string{"method", "route", "status", "scenario"},
 	)
 	httpRequestDurationSeconds = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "http_request_duration_seconds",
-			Help:    "Duration of HTTP requests in seconds.",
-			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
-		}, []string{"method", "route", "status", "scenario"},
+		prometheus.HistogramOpts{Name: "http_request_duration_seconds", Help: "Duration of HTTP requests in seconds.", Buckets: prometheus.ExponentialBuckets(0.005, 2, 12)},
+		[]string{"method", "route", "status", "scenario"},
 	)
 	upstreamLatencySeconds = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "upstream_latency_seconds",
-			Help:    "Latency of upstream calls in seconds.",
-			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
-		}, []string{"upstream", "scenario"},
+		prometheus.HistogramOpts{Name: "upstream_latency_seconds", Help: "Latency of upstream calls in seconds.", Buckets: prometheus.ExponentialBuckets(0.005, 2, 12)},
+		[]string{"upstream", "scenario"},
 	)
 	decisionRequestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "decision_requests_total",
-			Help: "Number of cache decisions by outcome.",
-		}, []string{"outcome", "scenario"},
+		prometheus.CounterOpts{Name: "decision_requests_total", Help: "Number of cache decisions by outcome."},
+		[]string{"outcome", "scenario"},
 	)
 
 	spatialResponseTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "spatial_response_total",
-			Help: "Total number of composed spatial responses by hit class and format.",
-		}, []string{"hit_class", "format", "scenario"},
+		prometheus.CounterOpts{Name: "spatial_response_total", Help: "Total number of composed spatial responses by hit class and format."},
+		[]string{"hit_class", "format", "scenario"},
 	)
 	spatialResponseDurationSeconds = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "spatial_response_duration_seconds",
-			Help:    "End-to-end latency to compose a spatial response (seconds).",
-			Buckets: prometheus.ExponentialBuckets(0.005, 2, 12),
-		}, []string{"scenario", "hit_class"},
+		prometheus.HistogramOpts{Name: "spatial_response_duration_seconds", Help: "End-to-end latency to compose a spatial response (seconds).", Buckets: prometheus.ExponentialBuckets(0.005, 2, 12)},
+		[]string{"scenario", "hit_class"},
 	)
 	spatialAggregationErrorsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "spatial_aggregation_errors_total",
-			Help: "Count of errors in the spatial aggregation/composition pipeline by stage.",
-		}, []string{"stage"},
+		prometheus.CounterOpts{Name: "spatial_aggregation_errors_total", Help: "Count of errors in the spatial aggregation/composition pipeline by stage."},
+		[]string{"stage"},
 	)
 
 	spatialCacheHitsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "spatial_cache_hits_total",
-			Help: "Count of cache hits (keys found).",
-		}, []string{"scenario"},
+		prometheus.CounterOpts{Name: "spatial_cache_hits_total", Help: "Count of cache hits (keys found)."},
+		[]string{"scenario"},
 	)
 	spatialCacheMissesTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "spatial_cache_misses_total",
-			Help: "Count of cache misses (keys not found).",
-		}, []string{"scenario"},
+		prometheus.CounterOpts{Name: "spatial_cache_misses_total", Help: "Count of cache misses (keys not found)."},
+		[]string{"scenario"},
 	)
 	redisOperationDurationSeconds = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "redis_operation_duration_seconds",
-			Help:    "Latency of Redis operations in seconds.",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms..~16s
-		}, []string{"op", "scenario"},
+		prometheus.HistogramOpts{Name: "redis_operation_duration_seconds", Help: "Latency of Redis operations in seconds.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 15)},
+		[]string{"op", "scenario"},
 	)
 	cacheOpTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "cache_op_total",
-			Help: "Count of cache operations by op and outcome.",
-		}, []string{"op", "outcome", "scenario"},
+		prometheus.CounterOpts{Name: "cache_op_total", Help: "Count of cache operations by op and outcome."},
+		[]string{"op", "outcome", "scenario"},
 	)
 
 	spatialCacheHotKeys = prometheus.NewGaugeVec(
-		prometheus.GaugeOpts{
-			Name: "spatial_cache_hot_keys",
-			Help: "Current hot set size(s) or counts per tier.",
-		}, []string{"scenario", "tier"},
+		prometheus.GaugeOpts{Name: "spatial_cache_hot_keys", Help: "Current hot set size(s) or counts per tier."},
+		[]string{"scenario", "tier"},
 	)
 
 	invEvents = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "invalidation_events_total",
-			Help: "Number of invalidation events handled.",
-		}, []string{"result", "op", "layer"},
+		prometheus.CounterOpts{Name: "invalidation_events_total", Help: "Number of invalidation events handled."},
+		[]string{"result", "op", "layer"},
 	)
 	invDeletedKeys = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "invalidation_deleted_keys_total",
-			Help: "Total number of cache keys deleted by invalidation.",
-		}, []string{"layer"},
+		prometheus.CounterOpts{Name: "invalidation_deleted_keys_total", Help: "Total number of cache keys deleted by invalidation."},
+		[]string{"layer"},
 	)
 	invLatency = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name:    "invalidation_process_seconds",
-			Help:    "Time to process a single invalidation event.",
-			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15),
-		}, []string{"op", "layer"},
+		prometheus.HistogramOpts{Name: "invalidation_process_seconds", Help: "Time to process a single invalidation event.", Buckets: prometheus.ExponentialBuckets(0.001, 2, 15)},
+		[]string{"op", "layer"},
 	)
 
 	kafkaConsumerErrorsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "kafka_consumer_errors_total",
-			Help: "Errors encountered by the Kafka consumer.",
-		}, []string{"scenario", "kind"},
+		prometheus.CounterOpts{Name: "kafka_consumer_errors_total", Help: "Errors encountered by the Kafka consumer."},
+		[]string{"scenario", "kind"},
 	)
 
-	// register
+	adaptiveDecisionsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "adaptive_decisions_total", Help: "Count of adaptive decisions by decision and reason."},
+		[]string{"decision", "reason", "scenario"},
+	)
+	hotnessValueGauge = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{Name: "hotness_value", Help: "Sampled hotness score per cell (hashed label to limit cardinality)."},
+		[]string{"scenario", "cell_hash"},
+	)
+
+	// register all
 	r.MustRegister(
 		httpRequestsTotal, httpRequestDurationSeconds, upstreamLatencySeconds,
 		decisionRequestsTotal,
@@ -182,12 +157,13 @@ func initCollectors(r prometheus.Registerer) {
 		spatialCacheHotKeys,
 		invEvents, invDeletedKeys, invLatency,
 		kafkaConsumerErrorsTotal,
+		adaptiveDecisionsTotal, hotnessValueGauge,
 	)
 }
 
 func ExposeBuildInfo(_ string) {}
 
-// record an http request metric
+// HTTP request metric
 func ObserveHTTP(method, route string, status int, durationSeconds float64) {
 	if !enabled.Load() || httpRequestsTotal == nil {
 		return
@@ -306,4 +282,51 @@ func IncKafkaConsumerError(kind string) {
 		kind = "unknown"
 	}
 	kafkaConsumerErrorsTotal.WithLabelValues(getScenario(), kind).Inc()
+}
+
+func ObserveAdaptiveDecision(decision, reason string) {
+	if !enabled.Load() || adaptiveDecisionsTotal == nil {
+		return
+	}
+	if decision == "" {
+		decision = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	adaptiveDecisionsTotal.WithLabelValues(decision, reason, getScenario()).Inc()
+}
+
+func ObserveHotnessValueSample(cell string, score float64) {
+	if !enabled.Load() || hotnessValueGauge == nil || cell == "" {
+		return
+	}
+	// 1% deterministic sample by xxhash mod 100
+	const denom = uint64(100)
+	h := xx.Sum64String(cell)
+	if (h % denom) != 0 {
+		return
+	}
+	cellHash := toShortHash(h)
+	hotnessValueGauge.WithLabelValues(getScenario(), cellHash).Set(score)
+}
+
+func toShortHash(h uint64) string {
+	const width = 8
+	x := h >> 32
+	s := strconv.FormatUint(x, 16)
+
+	if len(s) >= width {
+		return s[len(s)-width:]
+	}
+
+	var b [width]byte
+	pad := width - len(s)
+
+	for i := range pad {
+		b[i] = '0'
+	}
+	copy(b[pad:], s)
+
+	return string(b[:])
 }

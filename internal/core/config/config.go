@@ -16,23 +16,30 @@ type InvalidationCfg struct {
 }
 
 type Config struct {
-	Addr                string
-	LogLevel            string
-	GeoServerURL        string
-	RedisAddr           string
-	KafkaBrokers        string
-	H3Res               int
-	Scenario            string
-	HotThreshold        float64
-	HotHalfLife         time.Duration
-	H3ResMin            int
-	H3ResMax            int
-	CacheOpTimeout      time.Duration
-	CacheTTLDefault     time.Duration
-	CacheTTLOvr         map[string]time.Duration
-	CacheFillMaxWorkers int
-	CacheFillQueue      int
-	Invalidation        InvalidationCfg
+	Addr                     string
+	LogLevel                 string
+	GeoServerURL             string
+	RedisAddr                string
+	KafkaBrokers             string
+	H3Res                    int
+	Scenario                 string
+	HotThreshold             float64
+	HotHalfLife              time.Duration
+	H3ResMin                 int
+	H3ResMax                 int
+	CacheOpTimeout           time.Duration
+	CacheTTLDefault          time.Duration
+	CacheTTLOvr              map[string]time.Duration
+	CacheFillMaxWorkers      int
+	CacheFillQueue           int
+	Invalidation             InvalidationCfg
+	AdaptiveEnabled          bool
+	AdaptiveDryRun           bool
+	AdaptiveSeed             uint64
+	AdaptiveServeOnlyIfFresh bool
+	AdaptiveTTLCold          time.Duration
+	AdaptiveTTLWarm          time.Duration
+	AdaptiveTTLHot           time.Duration
 }
 
 func FromEnv() Config {
@@ -50,6 +57,8 @@ func FromEnv() Config {
 		minRes, maxRes = res, res
 	}
 
+	ttlDefault := getduration("CACHE_TTL_DEFAULT", 60*time.Second)
+
 	return Config{
 		Addr:                getenv("ADDR", ":8090"),
 		LogLevel:            getenv("LOG_LEVEL", "info"),
@@ -63,7 +72,7 @@ func FromEnv() Config {
 		H3ResMin:            minRes,
 		H3ResMax:            maxRes,
 		CacheOpTimeout:      getduration("CACHE_OP_TIMEOUT", 250*time.Millisecond),
-		CacheTTLDefault:     getduration("CACHE_TTL_DEFAULT", 60*time.Second),
+		CacheTTLDefault:     ttlDefault,
 		CacheTTLOvr:         parseDurationMap(getenv("CACHE_TTL_OVERRIDES", "")),
 		CacheFillMaxWorkers: getint("CACHE_FILL_MAX_WORKERS", 8),
 		CacheFillQueue:      getint("CACHE_FILL_QUEUE", 64),
@@ -74,6 +83,14 @@ func FromEnv() Config {
 			Brokers: getenv("KAFKA_BROKERS", "localhost:9092"),
 			GroupID: getenv("KAFKA_GROUP_ID", "cache-invalidator"),
 		},
+
+		AdaptiveEnabled:          getbool("ADAPTIVE_ENABLED", false),
+		AdaptiveDryRun:           getbool("ADAPTIVE_DRY_RUN", false),
+		AdaptiveSeed:             getuint64("ADAPTIVE_SEED", 1),
+		AdaptiveServeOnlyIfFresh: getbool("ADAPTIVE_SERVE_ONLY_IF_FRESH", false),
+		AdaptiveTTLCold:          getduration("ADAPTIVE_TTL_COLD", ttlDefault/2),
+		AdaptiveTTLWarm:          getduration("ADAPTIVE_TTL_WARM", ttlDefault),
+		AdaptiveTTLHot:           getduration("ADAPTIVE_TTL_HOT", 2*ttlDefault),
 	}
 }
 
@@ -88,6 +105,27 @@ func getint(k string, def int) int {
 	if v := os.Getenv(k); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
+		}
+	}
+	return def
+}
+
+func getuint64(k string, def uint64) uint64 {
+	if v := os.Getenv(k); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return def
+}
+
+func getbool(k string, def bool) bool {
+	if v := os.Getenv(k); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "1", "t", "true", "y", "yes":
+			return true
+		case "0", "f", "false", "n", "no":
+			return false
 		}
 	}
 	return def
