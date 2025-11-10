@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -48,6 +49,9 @@ func getScenario() string {
 }
 
 var (
+	spatialReadsTotal              *prometheus.CounterVec
+	spatialInvalidationTotal       *prometheus.CounterVec
+	invalidationLagSeconds         prometheus.Gauge
 	httpRequestsTotal              *prometheus.CounterVec
 	httpRequestDurationSeconds     *prometheus.HistogramVec
 	upstreamLatencySeconds         *prometheus.HistogramVec
@@ -68,7 +72,32 @@ var (
 	hotnessValueGauge              *prometheus.GaugeVec
 )
 
+var lastLayerInvalidationTS sync.Map
+
 func initCollectors(r prometheus.Registerer) {
+	spatialReadsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_reads_total",
+			Help: "Number of served spatial reads by cache class and staleness.",
+		},
+		[]string{"scenario", "cache", "stale"},
+	)
+
+	spatialInvalidationTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_invalidation_total",
+			Help: "Invalidations by source (ttl|kafka) and action (delete|skip_version).",
+		},
+		[]string{"source", "action"},
+	)
+
+	invalidationLagSeconds = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "invalidation_lag_seconds",
+			Help: "Lag between invalidation event time and apply time (seconds).",
+		},
+	)
+
 	httpRequestsTotal = prometheus.NewCounterVec(
 		prometheus.CounterOpts{Name: "http_requests_total", Help: "Total number of HTTP requests."},
 		[]string{"method", "route", "status", "scenario"},
@@ -150,6 +179,7 @@ func initCollectors(r prometheus.Registerer) {
 
 	// register all
 	r.MustRegister(
+		spatialReadsTotal, spatialInvalidationTotal, invalidationLagSeconds,
 		httpRequestsTotal, httpRequestDurationSeconds, upstreamLatencySeconds,
 		decisionRequestsTotal,
 		spatialResponseTotal, spatialResponseDurationSeconds, spatialAggregationErrorsTotal,
@@ -329,4 +359,57 @@ func toShortHash(h uint64) string {
 	copy(b[pad:], s)
 
 	return string(b[:])
+}
+
+func ObserveSpatialRead(cache string, stale bool) {
+	if !enabled.Load() || spatialReadsTotal == nil {
+		return
+	}
+	if cache != "hit" {
+		cache = "miss"
+	}
+	staleS := "false"
+	if stale {
+		staleS = "true"
+	}
+	spatialReadsTotal.WithLabelValues(getScenario(), cache, staleS).Inc()
+}
+
+func IncSpatialInvalidation(source, action string) {
+	if !enabled.Load() || spatialInvalidationTotal == nil {
+		return
+	}
+	if source == "" {
+		source = "unknown"
+	}
+	if action == "" {
+		action = "unknown"
+	}
+	spatialInvalidationTotal.WithLabelValues(source, action).Inc()
+}
+
+func SetInvalidationLagSeconds(v float64) {
+	if !enabled.Load() || invalidationLagSeconds == nil {
+		return
+	}
+	invalidationLagSeconds.Set(v)
+}
+
+func SetLayerInvalidatedAt(layer string, ts time.Time) {
+	if layer == "" {
+		return
+	}
+	lastLayerInvalidationTS.Store(layer, ts.Unix())
+}
+
+func GetLayerInvalidatedAtUnix(layer string) int64 {
+	if layer == "" {
+		return 0
+	}
+	if v, ok := lastLayerInvalidationTS.Load(layer); ok {
+		if n, ok2 := v.(int64); ok2 {
+			return n
+		}
+	}
+	return 0
 }

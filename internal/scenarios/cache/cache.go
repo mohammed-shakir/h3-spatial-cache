@@ -1,7 +1,9 @@
 package cache
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -285,6 +287,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	// cache lookup
 	var hits map[string][]byte
+	var staleAny bool
 	if useLookup {
 		m, err := e.store.MGet(keysList)
 		if err != nil {
@@ -300,9 +303,14 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	// separate hits/misses
 	pages := make([]composer.ShardPage, 0, len(keysList))
 	missing := make([]string, 0, len(keysList))
+	lastInv := observability.GetLayerInvalidatedAtUnix(q.Layer)
 	for i, k := range keysList {
 		if v, ok := hits[k]; ok && len(v) > 0 {
-			pages = append(pages, composer.ShardPage{Body: v, CacheStatus: composer.CacheHit})
+			body, wroteAt, _ := decodeCacheValue(v)
+			if wroteAt > 0 && lastInv > 0 && wroteAt < lastInv {
+				staleAny = true
+			}
+			pages = append(pages, composer.ShardPage{Body: body, CacheStatus: composer.CacheHit})
 			continue
 		}
 		missing = append(missing, cells[i])
@@ -327,6 +335,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		w.Header().Set("Content-Type", res.ContentType)
 		w.WriteHeader(res.StatusCode)
 		_, _ = w.Write(res.Body)
+		observability.ObserveSpatialRead("hit", staleAny)
 		observability.AddCacheHits(len(pages))
 		e.logger.Info("cache full-hit",
 			"layer", q.Layer, "res", resToUse,
@@ -359,7 +368,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 				}
 				res := e.fetchCell(ctx, q, cell, resToUse)
 				if res.err == nil && len(res.body) > 0 && writeFill {
-					_ = e.store.Set(res.key, res.body, ttl)
+					_ = e.store.Set(res.key, encodeCacheValue(res.body), ttl)
 				}
 				select {
 				case results <- res:
@@ -426,7 +435,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 	w.Header().Set("Content-Type", res.ContentType)
 	w.WriteHeader(res.StatusCode)
-	_, _ = w.Write(res.Body)
+	observability.ObserveSpatialRead("miss", staleAny)
 	e.logger.Info("cache partial-miss",
 		"layer", q.Layer, "res", resToUse,
 		"cells", len(cells), "hits", len(pages)-len(fetched), "misses", len(missing),
@@ -434,6 +443,30 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		"fill_dur", time.Since(fillStart).String(),
 		"total_dur", time.Since(start).String(),
 		"decision", decisionLabel(dec.Type), "reason", string(reason), "run_id", e.runID)
+}
+
+func encodeCacheValue(body []byte) []byte {
+	h := make([]byte, 3+8+len(body))
+	copy(h[:3], []byte{'S', 'C', '1'})
+	ts := max(time.Now().UTC().Unix(), 0)
+	var buf8 [8]byte
+	b := bytes.NewBuffer(buf8[:0])
+	if err := binary.Write(b, binary.BigEndian, ts); err == nil {
+		copy(h[3:11], buf8[:])
+	}
+	copy(h[11:], body)
+	return h
+}
+
+func decodeCacheValue(v []byte) (body []byte, wroteAt int64, ok bool) {
+	if len(v) >= 11 && v[0] == 'S' && v[1] == 'C' && v[2] == '1' {
+		var ts int64
+		if err := binary.Read(bytes.NewReader(v[3:11]), binary.BigEndian, &ts); err != nil {
+			return v[11:], 0, true
+		}
+		return v[11:], ts, true
+	}
+	return v, 0, false
 }
 
 func (e *Engine) cellsForRes(q model.QueryRequest, res int) (model.Cells, error) {
@@ -542,7 +575,6 @@ func cellPolygonGeoJSON(cellStr string) (string, error) {
 	return `{"type":"Polygon","coordinates":[[` + strings.Join(coords, ",") + `]]}`, nil
 }
 
-// read-only hotness view handed to the decider
 type hotReadOnly struct{ w *metricswrap.WithMetrics }
 
 func (h hotReadOnly) Score(cell string) float64 {

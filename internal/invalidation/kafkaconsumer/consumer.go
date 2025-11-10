@@ -165,6 +165,10 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 		return fmt.Errorf("json decode: %w", err)
 	}
 
+	if !ev.TS.IsZero() {
+		obs.SetInvalidationLagSeconds(time.Since(ev.TS).Seconds())
+	}
+
 	cells, err := c.cellsForEvent(ev)
 	if err != nil {
 		obs.ObserveInvalidation(ev.Op, ev.Layer, 0, time.Since(start), err)
@@ -202,6 +206,8 @@ func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) 
 	}
 
 	obs.ObserveInvalidation(ev.Op, ev.Layer, len(delKeys), time.Since(start), nil)
+	obs.IncSpatialInvalidation("kafka", "delete")
+	obs.SetLayerInvalidatedAt(ev.Layer, ev.TS)
 	c.logger.Debug("invalidated keys",
 		"layer", ev.Layer, "op", ev.Op, "cells", len(cells), "keys", len(delKeys))
 
