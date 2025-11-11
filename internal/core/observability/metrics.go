@@ -51,6 +51,7 @@ func getScenario() string {
 var (
 	spatialReadsTotal              *prometheus.CounterVec
 	spatialInvalidationTotal       *prometheus.CounterVec
+	spatialFreshRejectsTotal       *prometheus.CounterVec
 	invalidationLagSeconds         prometheus.Gauge
 	httpRequestsTotal              *prometheus.CounterVec
 	httpRequestDurationSeconds     *prometheus.HistogramVec
@@ -81,6 +82,14 @@ func initCollectors(r prometheus.Registerer) {
 			Help: "Number of served spatial reads by cache class and staleness.",
 		},
 		[]string{"scenario", "cache", "stale"},
+	)
+
+	spatialFreshRejectsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_fresh_rejects_total",
+			Help: "Count of HTTP 412 rejections due to freshness gating by reason.",
+		},
+		[]string{"scenario", "reason"},
 	)
 
 	spatialInvalidationTotal = prometheus.NewCounterVec(
@@ -179,7 +188,7 @@ func initCollectors(r prometheus.Registerer) {
 
 	// register all
 	r.MustRegister(
-		spatialReadsTotal, spatialInvalidationTotal, invalidationLagSeconds,
+		spatialReadsTotal, spatialInvalidationTotal, spatialFreshRejectsTotal, invalidationLagSeconds,
 		httpRequestsTotal, httpRequestDurationSeconds, upstreamLatencySeconds,
 		decisionRequestsTotal,
 		spatialResponseTotal, spatialResponseDurationSeconds, spatialAggregationErrorsTotal,
@@ -373,6 +382,18 @@ func ObserveSpatialRead(cache string, stale bool) {
 		staleS = "true"
 	}
 	spatialReadsTotal.WithLabelValues(getScenario(), cache, staleS).Inc()
+}
+
+func IncFreshReject(reason string) {
+	if !enabled.Load() || spatialFreshRejectsTotal == nil {
+		return
+	}
+	if reason != "stale" && reason != "miss" {
+		reason = "unknown"
+	}
+	spatialFreshRejectsTotal.
+		WithLabelValues(getScenario(), reason).
+		Inc()
 }
 
 func IncSpatialInvalidation(source, action string) {

@@ -262,7 +262,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	// choose path based on decision type
 	useLookup := true
 	writeFill := true
-	serveOnlyIfFresh := false
 
 	switch dec.Type {
 	case adaptive.DecisionBypass:
@@ -271,13 +270,11 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			writeFill = false
 			ttl = 0
 		}
-	case adaptive.DecisionServeOnlyIfFresh:
-		if applyDecision {
-			serveOnlyIfFresh = true
-		}
 	case adaptive.DecisionFill:
 		// normal path
 	}
+
+	serveOnlyIfFresh := e.serveFreshOnly || (applyDecision && dec.Type == adaptive.DecisionServeOnlyIfFresh)
 
 	// build keys for the selected resolution
 	keysList := make([]string, 0, len(cells))
@@ -316,8 +313,15 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		missing = append(missing, cells[i])
 	}
 
-	if serveOnlyIfFresh && len(missing) > 0 {
-		http.Error(w, "fresh content required but not fully cached", http.StatusPreconditionFailed)
+	if serveOnlyIfFresh && (staleAny || len(missing) > 0) {
+		reason := "miss"
+		if staleAny {
+			reason = "stale"
+		}
+		observability.IncFreshReject(reason)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusPreconditionFailed)
+		_, _ = w.Write([]byte("fresh content required"))
 		return
 	}
 
@@ -458,6 +462,7 @@ func encodeCacheValue(body []byte) []byte {
 	return h
 }
 
+//nolint:unparam // keep 'ok' for forward compatibility
 func decodeCacheValue(v []byte) (body []byte, wroteAt int64, ok bool) {
 	if len(v) >= 11 && v[0] == 'S' && v[1] == 'C' && v[2] == '1' {
 		var ts int64

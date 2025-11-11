@@ -6,18 +6,18 @@ results fresh via **TTL + Kafka**–driven invalidations.
 
 ## Table of contents
 
-* [Description](#description)
-* [Prerequisites](#prerequisites)
-  * [Required](#required)
-  * [Recommended Tools](#recommended-tools)
-* [Quick start](#quick-start)
-  * [Environment Setup](#environment-setup)
-  * [Start the Services](#start-the-services)
-  * [Run The App](#run-the-app)
-    * [Locally](#locally)
-    * [Inside Docker](#inside-docker)
-  * [Stop the Services](#stop-the-services)
-* [License](#license)
+- [Description](#description)
+- [Prerequisites](#prerequisites)
+  - [Required](#required)
+  - [Recommended Tools](#recommended-tools)
+- [Quick start](#quick-start)
+  - [Environment Setup](#environment-setup)
+  - [Start the Services](#start-the-services)
+  - [Run The App](#run-the-app)
+    - [Locally](#locally)
+    - [Inside Docker](#inside-docker)
+  - [Stop the Services](#stop-the-services)
+- [License](#license)
 
 ## Description
 
@@ -26,10 +26,10 @@ overlapping, high-frequency queries for geographical “hot” regions (e.g., ur
 
 This uneven query distribution leads to:
 
-* Repeated, expensive database work
-* High CPU and I/O pressure on PostGIS
-* Longer map rendering times
-* Slower user latency
+- Repeated, expensive database work
+- High CPU and I/O pressure on PostGIS
+- Longer map rendering times
+- Slower user latency
 
 Caching is a common fix, but simple spatial caching often covers too much or
 can't keep up with changing hotspots. Systems like **Uber’s H3** use a grid that
@@ -39,9 +39,9 @@ generic web caching to reduce backend load.
 
 However, the combined use of:
 
-* Real-time hotspot detection via **H3** (external to PostGIS)
-* Adaptive caching of those hotspots in **Redis**
-* Precise invalidation driven by data-change events (e.g., via **Kafka**)
+- Real-time hotspot detection via **H3** (external to PostGIS)
+- Adaptive caching of those hotspots in **Redis**
+- Precise invalidation driven by data-change events (e.g., via **Kafka**)
 
 as a middleware layer has not, to the best of current
 knowledge, been thoroughly tested in the literature.
@@ -51,30 +51,30 @@ system performance modeling to test and validate this specific architectural app
 
 ## Repository Structure
 
-* `cmd/`: Main applications (middleware, load generator)
-* `internal/core`: Core components (server, router, executor, etc.)
-* `internal/scenarios`: Different implementations of the interfaces to
-test them against each other (baseline, h3, cache, etc.)
-* `internal/*`: Shared interfaces (cache, mapper, hotness, decision, etc.)
-used by scenarios.
-* `deploy/`: Docker stuff
-* `scripts/`: Helper scripts (start/stop services, capture stats, etc.)
-* `results/`: Load test output
+- `cmd/`: Main applications (middleware, load generator)
+- `internal/core`: Core components (server, router, executor, etc.)
+- `internal/scenarios`: Different implementations of the interfaces to
+  test them against each other (baseline, h3, cache, etc.)
+- `internal/*`: Shared interfaces (cache, mapper, hotness, decision, etc.)
+  used by scenarios.
+- `deploy/`: Docker stuff
+- `scripts/`: Helper scripts (start/stop services, capture stats, etc.)
+- `results/`: Load test output
 
 ## Prerequisites
 
 ### Required
 
-* [**Docker Engine**](https://docs.docker.com/engine/install)
-* [**Docker Compose v2**](https://docs.docker.com/compose/install)
-* [**Go (>= 1.24)**](https://go.dev/doc/install)
-* [**Git**](https://git-scm.com/downloads)
+- [**Docker Engine**](https://docs.docker.com/engine/install)
+- [**Docker Compose v2**](https://docs.docker.com/compose/install)
+- [**Go (>= 1.24)**](https://go.dev/doc/install)
+- [**Git**](https://git-scm.com/downloads)
 
 ### Recommended Tools
 
-* [**pgAdmin 4**](https://www.pgadmin.org/download)
-* [**RedisInsight**](https://redis.io/insight/)
-* [**Kafka UI**](https://github.com/provectus/kafka-ui)
+- [**pgAdmin 4**](https://www.pgadmin.org/download)
+- [**RedisInsight**](https://redis.io/insight/)
+- [**Kafka UI**](https://github.com/provectus/kafka-ui)
 
 ## Quick start
 
@@ -115,9 +115,9 @@ manually (The helper script uses docker compose under the hood):
 
 This script:
 
-* Starts **PostGIS**, **GeoServer**, **Redis**, and **Kafka** containers.
-* Creates Kafka topic.
-* Configures GeoServer by creating a workspace, datastore, and layer.
+- Starts **PostGIS**, **GeoServer**, **Redis**, and **Kafka** containers.
+- Creates Kafka topic.
+- Configures GeoServer by creating a workspace, datastore, and layer.
 
 ### Run The App
 
@@ -127,7 +127,7 @@ You can run the app either locally or inside the docker container.
 
 ```bash
 set -o allexport; . deploy/compose/.env; set +o allexport
-LOG_LEVEL=debug go run ./cmd/middleware
+go run ./cmd/middleware
 ```
 
 #### Inside Docker
