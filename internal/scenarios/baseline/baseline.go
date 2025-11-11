@@ -22,14 +22,15 @@ import (
 )
 
 type Engine struct {
-	logger *slog.Logger
-	exec   executor.Interface
-	res    int
-	mapr   *h3mapper.Mapper
-	hot    hotness.Interface
-	dec    decision.Interface
-	thr    float64
-	eng    composer.Engine
+	logger         *slog.Logger
+	exec           executor.Interface
+	res            int
+	mapr           *h3mapper.Mapper
+	hot            hotness.Interface
+	dec            decision.Interface
+	thr            float64
+	eng            composer.Engine
+	streamUpstream bool
 }
 
 func init() {
@@ -53,6 +54,7 @@ func newBaseline(cfg config.Config, logger *slog.Logger, exec executor.Interface
 		eng: composer.Engine{
 			V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced()),
 		},
+		streamUpstream: cfg.Features.BaselineStreamUpstream,
 	}, nil
 }
 
@@ -114,6 +116,13 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	q.H3Res = e.res
 	q.Cells = cells
+
+	if e.streamUpstream {
+		e.exec.ForwardGetFeature(w, r, q)
+		observability.ObserveSpatialRead("miss", false)
+		return
+	}
+
 	body, _, err := e.exec.FetchGetFeature(ctx, q)
 	if err != nil {
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)

@@ -2,3 +2,5 @@ scenario: baseline
 cache_invalidation:
   enabled: false
   driver: "none"
+features:
+  baseline_stream_upstream: false

@@ -16,7 +16,8 @@ type InvalidationCfg struct {
 }
 
 type Features struct {
-	GMLStreaming bool
+	GMLStreaming           bool
+	BaselineStreamUpstream bool
 }
 
 type Config struct {
@@ -97,7 +98,8 @@ func FromEnv() Config {
 		AdaptiveTTLWarm:          getduration("ADAPTIVE_TTL_WARM", ttlDefault),
 		AdaptiveTTLHot:           getduration("ADAPTIVE_TTL_HOT", 2*ttlDefault),
 		Features: Features{
-			GMLStreaming: getbool("FEATURES_GML_STREAMING"),
+			GMLStreaming:           getbool("FEATURES_GML_STREAMING"),
+			BaselineStreamUpstream: getbool("FEATURES_BASELINE_STREAM_UPSTREAM"),
 		},
 	}
 }
