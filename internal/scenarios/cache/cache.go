@@ -602,6 +602,13 @@ func cellPolygonGeoJSON(cellStr string) (string, error) {
 
 type hotReadOnly struct{ w *metricswrap.WithMetrics }
 
+func (e *Engine) Hotness() interface{ Reset(...string) } {
+	if e == nil || e.hot == nil {
+		return nil
+	}
+	return e.hot
+}
+
 func (h hotReadOnly) Score(cell string) float64 {
 	if h.w == nil {
 		return 0

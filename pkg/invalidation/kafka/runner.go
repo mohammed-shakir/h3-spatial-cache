@@ -16,8 +16,13 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/invalidation"
 )
+
+type HotnessResetter interface {
+	Reset(cells ...string)
+}
 
 type Mapper interface {
 	CellsForBBox(bbox model.BBox, res int) (model.Cells, error)
@@ -40,12 +45,15 @@ type Runner struct {
 
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
+
+	hot HotnessResetter
 }
 
 type Options struct {
 	Logger   *slog.Logger
 	Register prometheus.Registerer
 	ResRange []int
+	Hotness  HotnessResetter
 }
 
 func New(cfg InvalidationConfig, c cache.Interface, m Mapper, opts Options) *Runner {
@@ -61,6 +69,7 @@ func New(cfg InvalidationConfig, c cache.Interface, m Mapper, opts Options) *Run
 		ms:       newMetricSet(opts.Register),
 		ver:      newVersionDedupe(8192),
 		assign:   map[int32]struct{}{},
+		hot:      opts.Hotness,
 	}
 	if len(r.resRange) == 0 {
 		r.resRange = []int{8}
@@ -180,13 +189,22 @@ func (r *Runner) handleMessage(ctx context.Context, msg *sarama.ConsumerMessage)
 	start := time.Now()
 
 	if !msg.Timestamp.IsZero() {
-		r.ms.lagGauge.Set(time.Since(msg.Timestamp).Seconds())
+		lag := time.Since(msg.Timestamp).Seconds()
+		r.ms.lagGauge.Set(lag)
+		observability.SetInvalidationLagSeconds(lag)
 	}
 
 	var w WireEvent
 	if err := json.Unmarshal(msg.Value, &w); err == nil && (w.Key != "" || len(w.H3Cells) > 0) {
-		err := r.applyWire(ctx, w)
+		ts := w.TS
+		if ts.IsZero() {
+			ts = msg.Timestamp
+		}
+		err := r.applyWire(ctx, w, ts)
 		r.observe(w.Op, err, time.Since(start))
+		if err == nil && w.Layer != "" && !ts.IsZero() {
+			observability.SetLayerInvalidatedAt(w.Layer, ts)
+		}
 		return err
 	}
 
@@ -199,8 +217,12 @@ func (r *Runner) handleMessage(ctx context.Context, msg *sarama.ConsumerMessage)
 		r.ms.msgs.WithLabelValues("error").Inc()
 		return fmt.Errorf("validate: %w", err)
 	}
+	ts := msg.Timestamp
 	err := r.applySpatial(ctx, ev)
 	r.observe(ev.Op, err, time.Since(start))
+	if err == nil && ev.Layer != "" && !ts.IsZero() {
+		observability.SetLayerInvalidatedAt(ev.Layer, ts)
+	}
 	return err
 }
 
@@ -216,16 +238,18 @@ func (r *Runner) observe(op string, err error, dur time.Duration) {
 	r.ms.proc.WithLabelValues(op).Observe(dur.Seconds())
 }
 
-func (r *Runner) applyWire(_ context.Context, w WireEvent) error {
+func (r *Runner) applyWire(_ context.Context, w WireEvent, _ time.Time) error {
 	var keysToDel []string
+	appliedSet := make(map[string]struct{})
+
+	res := r.resRange
+	if len(w.Resolutions) > 0 {
+		res = w.Resolutions
+	}
 
 	if w.Key != "" {
 		keysToDel = append(keysToDel, w.Key)
 	} else {
-		res := r.resRange
-		if len(w.Resolutions) > 0 {
-			res = w.Resolutions
-		}
 		for _, cell := range w.H3Cells {
 			for _, rr := range res {
 				keysToDel = append(keysToDel, keys.Key(w.Layer, rr, cell, ""))
@@ -234,12 +258,22 @@ func (r *Runner) applyWire(_ context.Context, w WireEvent) error {
 	}
 
 	applied := 0
-	for _, k := range keysToDel {
+	perCell := 1
+	if len(w.H3Cells) > 0 {
+		perCell = len(res)
+	}
+	for i, k := range keysToDel {
 		if !r.ver.shouldApply(k, w.Version) {
 			r.ms.apply.WithLabelValues("skip_version").Inc()
 			continue
 		}
 		applied++
+		if len(w.H3Cells) > 0 {
+			cellIdx := i / perCell
+			if cellIdx >= 0 && cellIdx < len(w.H3Cells) {
+				appliedSet[w.H3Cells[cellIdx]] = struct{}{}
+			}
+		}
 	}
 	if applied == 0 {
 		return nil
@@ -248,6 +282,13 @@ func (r *Runner) applyWire(_ context.Context, w WireEvent) error {
 		return fmt.Errorf("redis del (%d keys): %w", len(keysToDel), err)
 	}
 	r.ms.apply.WithLabelValues("delete").Add(float64(applied))
+	if r.hot != nil && len(appliedSet) > 0 {
+		uniq := make([]string, 0, len(appliedSet))
+		for c := range appliedSet {
+			uniq = append(uniq, c)
+		}
+		r.hot.Reset(uniq...)
+	}
 	return nil
 }
 
@@ -287,6 +328,9 @@ func (r *Runner) applySpatial(_ context.Context, ev invalidation.Event) error {
 		return fmt.Errorf("redis del (%d keys): %w", len(ks), err)
 	}
 	r.ms.apply.WithLabelValues("delete").Add(float64(len(ks)))
+	if r.hot != nil {
+		r.hot.Reset(cells...)
+	}
 	return nil
 }
 

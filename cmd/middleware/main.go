@@ -114,6 +114,14 @@ func run() int {
 		return 1
 	}
 
+	type resetter interface{ Reset(...string) }
+	var hot resetter
+	if h, ok := handler.(interface {
+		Hotness() interface{ Reset(...string) }
+	}); ok {
+		hot = h.Hotness()
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -202,6 +210,12 @@ func run() int {
 				Logger:   appLog,
 				Register: promReg,
 				ResRange: resRange,
+				Hotness: func() resetter {
+					if cfg.AdaptiveEnabled && hot != nil {
+						return hot
+					}
+					return nil
+				}(),
 			})
 
 			go func() {
