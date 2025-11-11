@@ -32,6 +32,14 @@ func (f *execRecorder) ForwardWFS(_ context.Context, w http.ResponseWriter, _ *h
 	w.WriteHeader(f.wroteStatus)
 }
 
+func (f *execRecorder) ForwardGetFeature(w http.ResponseWriter, r *http.Request, q model.QueryRequest) {
+	f.ForwardWFS(context.Background(), w, r, q)
+}
+
+func (f *execRecorder) ForwardGetFeatureFormat(w http.ResponseWriter, r *http.Request, q model.QueryRequest, _ string) {
+	f.ForwardWFS(context.Background(), w, r, q)
+}
+
 func equalValues2(a, b url.Values) bool {
 	if len(a) != len(b) {
 		return false

@@ -46,6 +46,7 @@ type Engine struct {
 	store           cacheiface.Interface
 	owsURL          *url.URL
 	http            *http.Client
+	exec            executor.Interface
 	ttlDefault      time.Duration
 	ttlMap          map[string]time.Duration
 	maxWorkers      int
@@ -54,6 +55,7 @@ type Engine struct {
 	adaptiveEnabled bool
 	adaptiveDryRun  bool
 	serveFreshOnly  bool
+	gmlStreaming    bool
 	decider         adaptive.Decider
 	hot             *metricswrap.WithMetrics
 	runID           string
@@ -64,7 +66,7 @@ func init() {
 }
 
 // creates cache scenario query handler
-func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (router.QueryHandler, error) {
+func newCache(cfg config.Config, logger *slog.Logger, ex executor.Interface) (router.QueryHandler, error) {
 	rc, err := redisstore.New(context.Background(), cfg.RedisAddr)
 	if err != nil {
 		return nil, fmt.Errorf("redis client: %w", err)
@@ -90,6 +92,7 @@ func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (rou
 
 		owsURL: u,
 		http:   httpclient.NewOutbound(),
+		exec:   ex,
 
 		ttlDefault: cfg.CacheTTLDefault,
 		ttlMap:     cfg.CacheTTLOvr,
@@ -101,6 +104,7 @@ func newCache(cfg config.Config, logger *slog.Logger, _ executor.Interface) (rou
 		adaptiveEnabled: cfg.AdaptiveEnabled,
 		adaptiveDryRun:  cfg.AdaptiveDryRun,
 		serveFreshOnly:  cfg.AdaptiveServeOnlyIfFresh,
+		gmlStreaming:    cfg.Features.GMLStreaming,
 		runID:           fmt.Sprintf("%016x", cfg.AdaptiveSeed),
 	}
 
@@ -181,6 +185,22 @@ type result struct {
 
 func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http.Request, q model.QueryRequest) {
 	start := time.Now()
+
+	neg := composer.NegotiateFormat(composer.NegotiationInput{
+		AcceptHeader:  r.Header.Get("Accept"),
+		OutputFormat:  r.URL.Query().Get("outputFormat"),
+		DefaultFormat: composer.FormatGeoJSON,
+	})
+	if neg.Format == composer.FormatGML32 {
+		if e.gmlStreaming && e.exec != nil {
+			const gml32 = "application/gml+xml; version=3.2"
+			e.exec.ForwardGetFeatureFormat(w, r, q, gml32)
+			return
+		}
+		w.Header().Set("Vary", "Accept")
+		http.Error(w, "gml not enabled; request GeoJSON or enable features.gml_streaming", http.StatusNotAcceptable)
+		return
+	}
 
 	// map footprint to cells at base resolution
 	cells, err := e.cellsForRes(q, e.res)

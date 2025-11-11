@@ -28,6 +28,14 @@ func (f *fakeExec) ForwardWFS(_ context.Context, w http.ResponseWriter, _ *http.
 	w.WriteHeader(f.wroteStatus)
 }
 
+func (f *fakeExec) ForwardGetFeature(w http.ResponseWriter, r *http.Request, q model.QueryRequest) {
+	f.ForwardWFS(context.Background(), w, r, q)
+}
+
+func (f *fakeExec) ForwardGetFeatureFormat(w http.ResponseWriter, r *http.Request, q model.QueryRequest, _ string) {
+	f.ForwardWFS(context.Background(), w, r, q)
+}
+
 func equalValues(a, b url.Values) bool {
 	if len(a) != len(b) {
 		return false

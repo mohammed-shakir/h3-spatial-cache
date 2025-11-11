@@ -15,6 +15,10 @@ type InvalidationCfg struct {
 	GroupID string
 }
 
+type Features struct {
+	GMLStreaming bool
+}
+
 type Config struct {
 	Addr                     string
 	LogLevel                 string
@@ -40,6 +44,7 @@ type Config struct {
 	AdaptiveTTLCold          time.Duration
 	AdaptiveTTLWarm          time.Duration
 	AdaptiveTTLHot           time.Duration
+	Features                 Features
 }
 
 func FromEnv() Config {
@@ -84,13 +89,16 @@ func FromEnv() Config {
 			GroupID: getenv("KAFKA_GROUP_ID", "cache-invalidator"),
 		},
 
-		AdaptiveEnabled:          getbool("ADAPTIVE_ENABLED", false),
-		AdaptiveDryRun:           getbool("ADAPTIVE_DRY_RUN", false),
+		AdaptiveEnabled:          getbool("ADAPTIVE_ENABLED"),
+		AdaptiveDryRun:           getbool("ADAPTIVE_DRY_RUN"),
 		AdaptiveSeed:             getuint64("ADAPTIVE_SEED", 1),
-		AdaptiveServeOnlyIfFresh: getbool("ADAPTIVE_SERVE_ONLY_IF_FRESH", false),
+		AdaptiveServeOnlyIfFresh: getbool("ADAPTIVE_SERVE_ONLY_IF_FRESH"),
 		AdaptiveTTLCold:          getduration("ADAPTIVE_TTL_COLD", ttlDefault/2),
 		AdaptiveTTLWarm:          getduration("ADAPTIVE_TTL_WARM", ttlDefault),
 		AdaptiveTTLHot:           getduration("ADAPTIVE_TTL_HOT", 2*ttlDefault),
+		Features: Features{
+			GMLStreaming: getbool("FEATURES_GML_STREAMING"),
+		},
 	}
 }
 
@@ -119,7 +127,7 @@ func getuint64(k string, def uint64) uint64 {
 	return def
 }
 
-func getbool(k string, def bool) bool {
+func getbool(k string) bool {
 	if v := os.Getenv(k); v != "" {
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "1", "t", "true", "y", "yes":
@@ -128,7 +136,7 @@ func getbool(k string, def bool) bool {
 			return false
 		}
 	}
-	return def
+	return false
 }
 
 func getfloat(k string, def float64) float64 {

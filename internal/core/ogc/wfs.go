@@ -13,6 +13,10 @@ func OWSEndpoint(geoServerBase string) string {
 }
 
 func BuildGetFeatureParams(q model.QueryRequest) url.Values {
+	return BuildGetFeatureParamsFormat(q, "application/json")
+}
+
+func BuildGetFeatureParamsFormat(q model.QueryRequest, outputFormat string) url.Values {
 	params := url.Values{}
 	params.Set("service", "WFS")
 	params.Set("version", "2.0.0")
@@ -37,6 +41,9 @@ func BuildGetFeatureParams(q model.QueryRequest) url.Values {
 	} else if q.Filters != "" {
 		params.Set("cql_filter", q.Filters)
 	}
-	params.Set("outputFormat", "application/json")
+	if strings.TrimSpace(outputFormat) == "" {
+		outputFormat = "application/json"
+	}
+	params.Set("outputFormat", outputFormat)
 	return params
 }
