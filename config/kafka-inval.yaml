@@ -1,4 +1,4 @@
-scenario: ttl_cache
+scenario: cache
 cache_invalidation:
   enabled: true
   driver: "kafka"
