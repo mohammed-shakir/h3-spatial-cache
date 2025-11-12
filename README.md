@@ -127,7 +127,7 @@ You can run the app either locally or inside the docker container.
 
 ```bash
 set -o allexport; . deploy/compose/.env; set +o allexport
-go run ./cmd/middleware
+go run ./cmd/middleware -scenario baseline
 ```
 
 #### Inside Docker
@@ -170,7 +170,44 @@ or use default parameters:
 go run ./cmd/baseline-loadgen -out results/baseline
 ```
 
-Optionally, you can capture container cpu/memory stats during the load test:
+Or run the experiment-runner to do multiple runs with different scenarios.
+You can run the full matrix directly:
+
+```bash
+go run ./cmd/experiment-runner \
+  -prom http://localhost:9090 \
+  -target http://localhost:8090/query \
+  -layer demo:NR_polygon \
+  -duration 2m \
+  -concurrency 32 \
+  -bboxes 128 \
+  -out results \
+  -scenarios baseline,cache \
+  -h3res 7,8,9 \
+  -ttls 30s,60s \
+  -hots 5,10 \
+  -invalidations ttl,kafka
+```
+
+or for a focused test (e.g., just one configuration):
+
+```bash
+go run ./cmd/experiment-runner \
+  -prom http://localhost:9090 \
+  -target http://localhost:8090/query \
+  -layer demo:NR_polygon \
+  -duration 1m \
+  -concurrency 16 \
+  -bboxes 64 \
+  -out results \
+  -scenarios cache \
+  -h3res 8 \
+  -ttls 60s \
+  -hots 10 \
+  -invalidations ttl
+```
+
+Optionally, you can also capture container cpu/memory stats during the load test:
 
 ```bash
 ./scripts/capture-stats.sh geoserver postgis > results/docker_stats_$(date -u +%Y%m%d_%H%M%SZ).csv
