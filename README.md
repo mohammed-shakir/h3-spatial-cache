@@ -206,7 +206,7 @@ go run ./cmd/baseline-loadgen \
   -bboxes 128 \
   -centroids data/NR_polygon_centroids.csv \
   -out results/baseline \
-  -append-ts=false \
+  -append-ts=true \
   -ts-format=iso
 ```
 
