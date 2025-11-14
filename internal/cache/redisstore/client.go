@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	maintnotifications "github.com/redis/go-redis/v9/maintnotifications"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 )
@@ -49,6 +50,9 @@ func New(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 		DialTimeout:  2 * time.Second,
 		ReadTimeout:  1 * time.Second,
 		WriteTimeout: 1 * time.Second,
+		MaintNotificationsConfig: &maintnotifications.Config{
+			Mode: maintnotifications.ModeDisabled,
+		},
 	}
 	for _, f := range opts {
 		f(ro)

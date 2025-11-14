@@ -306,6 +306,12 @@ golangci-lint run
 golangci-lint run --fix
 ```
 
+and to clean up dependencies:
+
+```bash
+go mod tidy
+```
+
 ## License
 
 This project is licensed under the **Business Source License 1.1** (see
