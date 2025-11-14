@@ -1,6 +1,7 @@
 # System Architecture
 
-<!--toc:start-->
+## Table of Contents
+
 - [System Architecture](#system-architecture)
   - [1. HTTP server and router](#1-http-server-and-router)
     - [1.1 What it does](#11-what-it-does)
@@ -19,7 +20,6 @@
     - [5.2 PostGIS](#52-postgis)
     - [5.3 Executor responsibilities](#53-executor-responsibilities)
   - [6. Kafka invalidation path](#6-kafka-invalidation-path)
-<!--toc:end-->
 
 ## 1. HTTP server and router
 

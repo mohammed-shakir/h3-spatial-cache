@@ -6,18 +6,25 @@ results fresh via **TTL + Kafka**–driven invalidations.
 
 ## Table of contents
 
-- [Description](#description)
-- [Prerequisites](#prerequisites)
-  - [Required](#required)
-  - [Recommended Tools](#recommended-tools)
-- [Quick start](#quick-start)
-  - [Environment Setup](#environment-setup)
-  - [Start the Services](#start-the-services)
-  - [Run The App](#run-the-app)
-    - [Locally](#locally)
-    - [Inside Docker](#inside-docker)
-  - [Stop the Services](#stop-the-services)
-- [License](#license)
+- [Adaptive Caching of Spatial Queries in PostGIS Using H3](#adaptive-caching-of-spatial-queries-in-postgis-using-h3)
+  - [Description](#description)
+  - [Repository Structure](#repository-structure)
+  - [Prerequisites](#prerequisites)
+    - [Required](#required)
+    - [Recommended Tools](#recommended-tools)
+  - [Quick start](#quick-start)
+    - [Environment Setup](#environment-setup)
+      - [Database Seed](#database-seed)
+    - [Start the Services](#start-the-services)
+    - [Run The App](#run-the-app)
+      - [Locally](#locally)
+      - [Inside Docker](#inside-docker)
+    - [Load Testing](#load-testing)
+    - [Test Queries](#test-queries)
+    - [Stop the Services](#stop-the-services)
+    - [Testing](#testing)
+    - [Lint](#lint)
+  - [License](#license)
 
 ## Description
 

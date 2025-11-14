@@ -1,6 +1,22 @@
 # Scenarios
 
-<!--toc:start-->
+All scenarios share the same input (HTTP request, layer, bbox/polygon, filters),
+they all produce the same kind of output (GeoJSON FeatureCollection / possibly GML),
+but the difference is how they get the data and what logic they apply.
+There are 2 scenarios implemented for this middleware:
+
+- `baseline`: no cache, just pass-through, but with tracking.
+- `cache`: uses redis + hotness + adaptive decisions.
+- Then "sub-scenarios"/modes layered on top of `cache`:
+  - Full cache hit
+  - Partial cache hit
+  - Cache miss
+  - Kafka invalidation
+  - Hotness & adaptive caching
+  - Monitoring/metrics
+
+## Table of Contents
+
 - [Scenarios](#scenarios)
   - [1. Baseline (no caching)](#1-baseline-no-caching)
     - [Step by step for baseline](#step-by-step-for-baseline)
@@ -23,22 +39,6 @@
       - [Key concepts](#key-concepts)
       - [Step by step for hotness and adaptive caching](#step-by-step-for-hotness-and-adaptive-caching)
       - [How to test hotness and adaptive caching](#how-to-test-hotness-and-adaptive-caching)
-<!--toc:end-->
-
-All scenarios share the same input (HTTP request, layer, bbox/polygon, filters),
-they all produce the same kind of output (GeoJSON FeatureCollection / possibly GML),
-but the difference is how they get the data and what logic they apply.
-There are 2 scenarios implemented for this middleware:
-
-- `baseline`: no cache, just pass-through, but with tracking.
-- `cache`: uses redis + hotness + adaptive decisions.
-- Then "sub-scenarios"/modes layered on top of `cache`:
-  - Full cache hit
-  - Partial cache hit
-  - Cache miss
-  - Kafka invalidation
-  - Hotness & adaptive caching
-  - Monitoring/metrics
 
 ## 1. Baseline (no caching)
 
