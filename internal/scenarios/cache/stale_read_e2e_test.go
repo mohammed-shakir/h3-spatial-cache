@@ -48,6 +48,8 @@ func TestDetects_StaleHit_AfterInvalidationMarker(t *testing.T) {
 	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
 	cfg.CacheTTLDefault = 5 * time.Minute
 	cfg.H3Res = 7
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := scenarios.New("cache", cfg, logger, nil)

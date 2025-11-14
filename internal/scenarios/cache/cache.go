@@ -286,12 +286,11 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	switch dec.Type {
 	case adaptive.DecisionBypass:
 		if applyDecision {
-			useLookup = false
 			writeFill = false
 			ttl = 0
 		}
 	case adaptive.DecisionFill:
-		// normal path
+		// normal path: read + write
 	}
 
 	serveOnlyIfFresh := e.serveFreshOnly || (applyDecision && dec.Type == adaptive.DecisionServeOnlyIfFresh)
@@ -459,6 +458,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 	w.Header().Set("Content-Type", res.ContentType)
 	w.WriteHeader(res.StatusCode)
+	_, _ = w.Write(res.Body)
 	observability.ObserveSpatialRead("miss", staleAny)
 	e.logger.Info("cache partial-miss",
 		"layer", q.Layer, "res", resToUse,

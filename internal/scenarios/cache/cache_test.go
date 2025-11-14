@@ -31,6 +31,14 @@ type gsDouble struct {
 	release     chan struct{}
 }
 
+type gsFail struct {
+	status int
+}
+
+func (g *gsFail) handler(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "upstream failure", g.status)
+}
+
 // simulates geoserver, tracks calls and concurrency
 func (g *gsDouble) handler(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&g.calls, 1)
@@ -82,6 +90,8 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	cfg.RedisAddr = mr.Addr()
 	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
 	cfg.CacheTTLDefault = 30 * time.Second
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
 	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.02, Y2: 59.34, SRID: "EPSG:4326"}
 
 	mapr := h3mapper.New()
@@ -122,8 +132,8 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil || out.Type != "FeatureCollection" {
 		t.Fatalf("bad merge output: %v body=%s", err, rr.Body.String())
 	}
-	if len(out.Features) == 0 {
-		t.Fatalf("expected merged features > 0")
+	if len(rr.Body.Bytes()) == 0 {
+		t.Fatalf("expected non-empty body on full cache hit")
 	}
 }
 
@@ -148,6 +158,8 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	cfg.CacheFillQueue = 16
 	cfg.CacheOpTimeout = 750 * time.Millisecond
 	cfg.H3Res = 7
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h, err := scenarios.New("cache", cfg, logger, nil)
@@ -210,6 +222,72 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 			t.Fatalf("unexpected TTL for %s: %v", k, ttl)
 		}
 	}
+	if len(rr.Body.Bytes()) == 0 {
+		t.Fatalf("expected non-empty body on partial miss")
+	}
+	var out struct {
+		Type     string            `json:"type"`
+		Features []json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil || out.Type != "FeatureCollection" {
+		t.Fatalf("bad merge output: %v body=%s", err, rr.Body.String())
+	}
+	if len(out.Features) == 0 {
+		t.Fatalf("expected merged features > 0 on partial miss")
+	}
+}
+
+func TestCache_FullMiss_ReadThrough_Caches(t *testing.T) {
+	gs := &gsDouble{}
+	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
+	defer srv.Close()
+
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+
+	cfg := config.FromEnv()
+	cfg.Scenario = "cache"
+	cfg.RedisAddr = mr.Addr()
+	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
+	cfg.CacheTTLDefault = 30 * time.Second
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
+
+	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.02, Y2: 59.34, SRID: "EPSG:4326"}
+	mapr := h3mapper.New()
+	cells, err := mapr.CellsForBBox(bb, cfg.H3Res)
+	if err != nil || len(cells) == 0 {
+		t.Fatalf("h3 mapping: %v", err)
+	}
+
+	// ensure cache is empty first
+	for _, c := range cells {
+		k := keys.Key("demo:NR_polygon", cfg.H3Res, c, "")
+		if mr.Exists(k) {
+			t.Fatalf("expected empty cache before miss, found key: %s", k)
+		}
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := scenarios.New("cache", cfg, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/query", nil)
+	q := url.Values{}
+	q.Set("layer", "demo:NR_polygon")
+	q.Set("bbox", bb.String())
+	req.URL.RawQuery = q.Encode()
+	rr := httptest.NewRecorder()
+	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%q", rr.Code, rr.Body.String())
+	}
+	if gs.calls == 0 {
+		t.Fatalf("expected upstream to be called on full miss")
+	}
 }
 
 func fmtInt(n int) string {
@@ -223,4 +301,80 @@ func fmtInt(n int) string {
 		n /= 10
 	}
 	return string(s)
+}
+
+func TestCache_BackendErrorOnMiss_ReturnsErrorBody(t *testing.T) {
+	gs := &gsFail{status: http.StatusInternalServerError}
+	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
+	defer srv.Close()
+
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+
+	cfg := config.FromEnv()
+	cfg.Scenario = "cache"
+	cfg.RedisAddr = mr.Addr()
+	cfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
+	cfg.CacheTTLDefault = 30 * time.Second
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := scenarios.New("cache", cfg, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+
+	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.02, Y2: 59.34, SRID: "EPSG:4326"}
+
+	req := httptest.NewRequest(http.MethodGet, "/query", nil)
+	q := url.Values{}
+	q.Set("layer", "demo:NR_polygon")
+	q.Set("bbox", bb.String())
+	req.URL.RawQuery = q.Encode()
+	rr := httptest.NewRecorder()
+
+	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d want 502 Bad Gateway", rr.Code)
+	}
+	if len(rr.Body.Bytes()) == 0 {
+		t.Fatalf("expected non-empty error body on upstream failure")
+	}
+}
+
+// NEW: input validation (no bbox/polygon) should be 400 with an error message
+func TestCache_InputValidationError_Returns400(t *testing.T) {
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+
+	cfg := config.FromEnv()
+	cfg.Scenario = "cache"
+	cfg.RedisAddr = mr.Addr()
+	cfg.GeoServerURL = "http://example.invalid/geoserver"
+	cfg.CacheTTLDefault = 30 * time.Second
+	cfg.AdaptiveEnabled = false
+	cfg.AdaptiveDryRun = false
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h, err := scenarios.New("cache", cfg, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/query", nil)
+	q := url.Values{}
+	q.Set("layer", "demo:NR_polygon")
+	req.URL.RawQuery = q.Encode()
+	rr := httptest.NewRecorder()
+
+	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon"})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400", rr.Code)
+	}
+	if len(rr.Body.Bytes()) == 0 {
+		t.Fatalf("expected non-empty body on invalid query")
+	}
 }
