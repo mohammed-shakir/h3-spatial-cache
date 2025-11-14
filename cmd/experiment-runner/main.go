@@ -37,6 +37,7 @@ type cfg struct {
 	TTLs          []string
 	Hots          []string
 	Invalidations []string
+	CentroidsPath string
 }
 
 func main() {
@@ -64,7 +65,7 @@ func parseFlags() cfg {
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
 	flag.StringVar(&c.OutRoot, "out", "results", "Output root dir")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Only create directory tree; no services")
-
+	flag.StringVar(&c.CentroidsPath, "centroids", "", "Optional centroid CSV file (id,lon,lat) to forward to loadgen")
 	flag.StringVar(&scenarios, "scenarios", "baseline,cache", "Scenarios CSV")
 	flag.StringVar(&h3res, "h3res", "7,8,9", "H3 resolutions CSV")
 	flag.StringVar(&ttls, "ttls", "30s,60s", "TTLs CSV (Cache TTL Default)")
@@ -176,8 +177,9 @@ func runOne(c cfg, root string, o opt) error {
 	}()
 
 	outPrefix := filepath.Join(dir, o.Scenario)
-	// #nosec G204 -- constructing argv for a fixed binary; no shell expansion, flags are static.
-	load := exec.Command("go", "run", "./cmd/baseline-loadgen",
+
+	args := []string{
+		"run", "./cmd/baseline-loadgen",
 		"-target", c.TargetURL,
 		"-layer", c.Layer,
 		"-concurrency", fmt.Sprintf("%d", c.Concurrency),
@@ -185,7 +187,15 @@ func runOne(c cfg, root string, o opt) error {
 		"-bboxes", fmt.Sprintf("%d", c.BBoxes),
 		"-out", outPrefix,
 		"-append-ts=false",
-	)
+	}
+
+	if strings.TrimSpace(c.CentroidsPath) != "" {
+		args = append(args, "-centroids", c.CentroidsPath)
+	}
+
+	// #nosec G204 -- constructing argv for a fixed binary; no shell expansion, flags are static.
+	load := exec.Command("go", args...)
+
 	load.Stdout = mustFile(filepath.Join(dir, "loadgen.stdout.log"))
 	load.Stderr = mustFile(filepath.Join(dir, "loadgen.stderr.log"))
 	start := time.Now().UTC()

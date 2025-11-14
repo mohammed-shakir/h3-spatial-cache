@@ -120,6 +120,9 @@ mkdir -p results
 The dataset (`scripts/seed/10-metria.sql`) is **not included** in this repository.
 Make sure you have that file in place before starting the services.
 
+Also, if you want to run the load generator and experiment runner with the
+centroids of the seed data, make sure you have the `data/` folder.
+
 ### Start the Services
 
 To start the services, you can use the provided scripts or run the commands
@@ -201,10 +204,14 @@ go run ./cmd/baseline-loadgen \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 128 \
+  -centroids data/NR_polygon_centroids.csv \
   -out results/baseline \
-  -append-ts=true \
+  -append-ts=false \
   -ts-format=iso
 ```
+
+(If you do not have the data/ folder, remove the `-centroids` flag to use
+random bboxes)
 
 or use default parameters:
 
@@ -220,9 +227,10 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 2m \
+  -duration 10s \
   -concurrency 32 \
   -bboxes 128 \
+  -centroids data/NR_polygon_centroids.csv \
   -out results \
   -scenarios baseline,cache \
   -h3res 7,8,9 \
@@ -238,9 +246,10 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 1m \
+  -duration 10s \
   -concurrency 16 \
   -bboxes 64 \
+  -centroids data/NR_polygon_centroids.csv \
   -out results \
   -scenarios cache \
   -h3res 8 \
@@ -248,6 +257,9 @@ go run ./cmd/experiment-runner \
   -hots 10 \
   -invalidations ttl
 ```
+
+(If you do not have the data/ folder, remove the `-centroids` flag to use
+random bboxes)
 
 Optionally, you can also capture container cpu/memory stats during the load test:
 

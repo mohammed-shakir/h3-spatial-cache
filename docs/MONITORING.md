@@ -129,10 +129,14 @@ In Grafana:
     -zipf-s 1.3 \
     -zipf-v 1.0 \
     -bboxes 128 \
+    -centroids data/NR_polygon_centroids.csv \
     -out results/baseline \
-    -append-ts=true \
+    -append-ts=false \
     -ts-format=iso
   ```
+
+  (If you do not have the data/ folder, remove the `-centroids` flag to use
+  random bboxes)
 
   or use default parameters:
 
@@ -152,9 +156,10 @@ In Grafana:
     -prom http://localhost:9090 \
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
-    -duration 2m \
+    -duration 10s \
     -concurrency 32 \
     -bboxes 128 \
+    -centroids data/NR_polygon_centroids.csv \
     -out results \
     -scenarios baseline,cache \
     -h3res 7,8,9 \
@@ -170,9 +175,10 @@ In Grafana:
     -prom http://localhost:9090 \
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
-    -duration 1m \
+    -duration 10s \
     -concurrency 16 \
     -bboxes 64 \
+    -centroids data/NR_polygon_centroids.csv \
     -out results \
     -scenarios cache \
     -h3res 8 \
@@ -180,6 +186,9 @@ In Grafana:
     -hots 10 \
     -invalidations ttl
   ```
+
+  (If you do not have the data/ folder, remove the `-centroids` flag to use
+  random bboxes)
 
   This produces a directory tree under:
 

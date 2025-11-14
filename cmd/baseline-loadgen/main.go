@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +35,7 @@ type Config struct {
 	RequestTimeout  time.Duration
 	AppendTimestamp bool
 	TimestampFormat string
+	CentroidFile    string
 }
 
 func loadConfig() Config {
@@ -48,6 +51,7 @@ func loadConfig() Config {
 	flag.DurationVar(&cfg.RequestTimeout, "timeout", 10*time.Second, "Per-request timeout")
 	flag.BoolVar(&cfg.AppendTimestamp, "append-ts", true, "Append timestamp to output prefix")
 	flag.StringVar(&cfg.TimestampFormat, "ts-format", "iso", "Timestamp format: iso|unix|none")
+	flag.StringVar(&cfg.CentroidFile, "centroids", "", "Optional centroid CSV file (id,lon,lat) to drive BBOXes")
 	flag.Parse()
 	return cfg
 }
@@ -86,6 +90,94 @@ func makeBBoxes(count int, r *rand.Rand) []BBox {
 		lat := 55 + r.Float64()*(66-55)                                           // random lat
 		w, h := 0.2*r.Float64()+0.05, 0.2*r.Float64()+0.05                        // random size
 		bboxes = append(bboxes, BBox{lon - w/2, lat - h/2, lon + w/2, lat + h/2}) // create box
+	}
+	return bboxes
+}
+
+type Centroid struct {
+	ID  string
+	Lon float64
+	Lat float64
+}
+
+func loadCentroidsCSV(path string) ([]Centroid, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("open centroids: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	r := csv.NewReader(f)
+
+	// Read header
+	header, err := r.Read()
+	if err != nil {
+		return nil, fmt.Errorf("read header: %w", err)
+	}
+	colIdx := map[string]int{}
+	for i, h := range header {
+		colIdx[strings.ToLower(strings.TrimSpace(h))] = i
+	}
+
+	idIdx, okID := colIdx["id"]
+	lonIdx, okLon := colIdx["lon"]
+	latIdx, okLat := colIdx["lat"]
+	if !okID || !okLon || !okLat {
+		return nil, fmt.Errorf("centroid csv: expected columns id,lon,lat; got %v", header)
+	}
+
+	var out []Centroid
+	for {
+		rec, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read row: %w", err)
+		}
+
+		id := strings.TrimSpace(rec[idIdx])
+		lonStr := strings.TrimSpace(rec[lonIdx])
+		latStr := strings.TrimSpace(rec[latIdx])
+
+		if id == "" || lonStr == "" || latStr == "" {
+			continue
+		}
+
+		lon, err := strconv.ParseFloat(lonStr, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse lon %q: %w", lonStr, err)
+		}
+		lat, err := strconv.ParseFloat(latStr, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse lat %q: %w", latStr, err)
+		}
+
+		out = append(out, Centroid{ID: id, Lon: lon, Lat: lat})
+	}
+
+	return out, nil
+}
+
+func makeBBoxesFromCentroids(centroids []Centroid, count int) []BBox {
+	if len(centroids) == 0 || count <= 0 {
+		return nil
+	}
+	if count > len(centroids) {
+		count = len(centroids)
+	}
+
+	const halfSize = 0.02 // degrees (~2.2km at mid-latitudes)
+
+	bboxes := make([]BBox, 0, count)
+	for i := range count {
+		c := centroids[i%len(centroids)]
+		bboxes = append(bboxes, BBox{
+			X1: c.Lon - halfSize,
+			Y1: c.Lat - halfSize,
+			X2: c.Lon + halfSize,
+			Y2: c.Lat + halfSize,
+		})
 	}
 	return bboxes
 }
@@ -143,13 +235,31 @@ func main() {
 		}
 	}
 
-	// Precompute random workload
+	// precompute random workload
 	seed := time.Now().UnixNano()
 	r := rand.New(rand.NewSource(seed))
-	bboxes := makeBBoxes(cfg.BBoxCount, r)
+
+	var bboxes []BBox
+	if strings.TrimSpace(cfg.CentroidFile) != "" {
+		centroids, err := loadCentroidsCSV(cfg.CentroidFile)
+		if err != nil {
+			log.Printf("WARN: failed to load centroids from %q: %v; falling back to synthetic BBOXes", cfg.CentroidFile, err)
+		} else {
+			bboxes = makeBBoxesFromCentroids(centroids, cfg.BBoxCount)
+			log.Printf("using %d centroid-driven BBOXes from %s", len(bboxes), cfg.CentroidFile)
+		}
+	}
+
+	// fallback if centroids disabled or failed
+	if len(bboxes) == 0 {
+		bboxes = makeBBoxes(cfg.BBoxCount, r)
+		log.Printf("using %d synthetic BBOXes", len(bboxes))
+	}
+
 	if len(bboxes) == 0 {
 		log.Fatalf("no BBOXes generated")
 	}
+
 	imax := uint64(len(bboxes)) - 1
 	zipfDist := rand.NewZipf(r, cfg.ZipfS, cfg.ZipfV, imax)
 
@@ -213,8 +323,8 @@ func main() {
 	}()
 
 	startTime := time.Now()
-	log.Printf("loadgen start target=%s layer=%s dur=%s conc=%d zipf(s=%.2f,v=%.2f) bboxes=%d",
-		cfg.TargetURL, cfg.LayerName, cfg.Duration, cfg.Concurrency, cfg.ZipfS, cfg.ZipfV, cfg.BBoxCount)
+	log.Printf("loadgen start target=%s layer=%s dur=%s conc=%d zipf(s=%.2f,v=%.2f) bboxes=%d centroids=%s",
+		cfg.TargetURL, cfg.LayerName, cfg.Duration, cfg.Concurrency, cfg.ZipfS, cfg.ZipfV, cfg.BBoxCount, cfg.CentroidFile)
 
 	var wg sync.WaitGroup
 	wg.Add(cfg.Concurrency)

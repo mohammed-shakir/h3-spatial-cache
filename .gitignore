@@ -47,3 +47,4 @@ deploy/compose/.env.*
 
 # DB data
 scripts/seed/10-metria.sql
+data/
