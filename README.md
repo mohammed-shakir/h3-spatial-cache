@@ -58,15 +58,23 @@ system performance modeling to test and validate this specific architectural app
 
 ## Repository Structure
 
-- `cmd/`: Main applications (middleware, load generator)
-- `internal/core`: Core components (server, router, executor, etc.)
-- `internal/scenarios`: Different implementations of the interfaces to
-  test them against each other (baseline, h3, cache, etc.)
-- `internal/*`: Shared interfaces (cache, mapper, hotness, decision, etc.)
-  used by scenarios.
-- `deploy/`: Docker stuff
-- `scripts/`: Helper scripts (start/stop services, capture stats, etc.)
-- `results/`: Load test output
+- `cmd/`: Main binaries/applications.
+- `internal/core/`: Core middleware components (HTTP server, router, executor,
+config, observability, OGC adapter, etc.).
+- `internal/scenarios/`: Scenario-specific behavior used for experiments
+(baseline, cache, etc.).
+- `internal/*`: Shared internal building blocks (cache, mapper, hotness,
+decision engine, metrics, invalidation, logger, etc.) used by core and scenarios.
+- `pkg/`: Reusable modules that can be imported by multiple binaries.
+- `config/`: Scenario/runtime configuration files that select which scenario
+and invalidation mode to run.
+- `deploy/`: Docker stuff + monitoring stuff.
+- `docs/`: Documentation.
+- `integration/`: Integration tests.
+- `scripts/`: Helper scripts (start/stop dev stack, capture stats,
+seed database, etc.).
+- `testdata/`: Test fixtures (e.g. GeoJSON aggregator inputs/expected outputs).
+- `results/`: Load test and experiment outputs.
 
 ## Prerequisites
 
