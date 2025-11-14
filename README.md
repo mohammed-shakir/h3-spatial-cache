@@ -82,6 +82,7 @@ system performance modeling to test and validate this specific architectural app
 - [**pgAdmin 4**](https://www.pgadmin.org/download)
 - [**RedisInsight**](https://redis.io/insight/)
 - [**Kafka UI**](https://github.com/provectus/kafka-ui)
+- [**valkey-cli**](https://valkey.io/topics/cli/)
 
 ## Quick start
 
@@ -122,9 +123,33 @@ manually (The helper script uses docker compose under the hood):
 
 This script:
 
-- Starts **PostGIS**, **GeoServer**, **Redis**, and **Kafka** containers.
-- Creates Kafka topic.
-- Configures GeoServer by creating a workspace, datastore, and layer.
+- Starts all services defined in `docker-compose.yml`, including:
+  - **PostGIS**
+  - **GeoServer**
+  - **Redis**
+  - **Kafka**
+  - **Prometheus**
+  - **Grafana**
+  - **Loki**
+  - **Promtail**
+  - **Alertmanager**
+  - (Optional) the `app` middleware (only if run with `--profile app`)
+
+- Waits until **PostGIS**, **Redis**, **Kafka**, and **GeoServer** are *healthy*.
+
+- Ensures the Kafka topic (default: `spatial-updates`) is created.
+
+- Configures GeoServer:
+
+  - Creates the workspace (default: `demo`)
+  - Creates/updates the PostGIS datastore
+  - Publishes all available feature types (tables) as GeoServer layers
+
+After the script completes, you can verify running containers with:
+
+```bash
+docker ps
+```
 
 ### Run The App
 
@@ -136,6 +161,8 @@ You can run the app either locally or inside the docker container.
 set -o allexport; . deploy/compose/.env; set +o allexport
 go run ./cmd/middleware -scenario baseline
 ```
+
+You can change the `-scenario` flag to test different scenarios (`baseline` or `cache`).
 
 #### Inside Docker
 
