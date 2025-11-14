@@ -1,19 +1,44 @@
 # Scenarios
 
+<!--toc:start-->
+- [Scenarios](#scenarios)
+  - [1. Baseline (no caching)](#1-baseline-no-caching)
+    - [Step by step for baseline](#step-by-step-for-baseline)
+    - [How to test the baseline](#how-to-test-the-baseline)
+  - [2. Cache scenario](#2-cache-scenario)
+    - [2.1 Full cache hit (cache scenario, best case)](#21-full-cache-hit-cache-scenario-best-case)
+      - [Step by step for full cache hit](#step-by-step-for-full-cache-hit)
+      - [How to test the full cache hit](#how-to-test-the-full-cache-hit)
+    - [2.2 Partial cache hit (realistic case)](#22-partial-cache-hit-realistic-case)
+      - [Step by step for partial cache hit](#step-by-step-for-partial-cache-hit)
+      - [How to test the partial cache hit](#how-to-test-the-partial-cache-hit)
+    - [2.3 Cache miss (cold or bypass)](#23-cache-miss-cold-or-bypass)
+      - [Step by step for cache miss](#step-by-step-for-cache-miss)
+      - [How to test the cache miss](#how-to-test-the-cache-miss)
+    - [2.4 Data update and Kafka-driven invalidation](#24-data-update-and-kafka-driven-invalidation)
+      - [The Event](#the-event)
+      - [Step by step for Kafka invalidation](#step-by-step-for-kafka-invalidation)
+      - [How to test Kafka invalidation](#how-to-test-kafka-invalidation)
+    - [2.5 Hotness tracking and adaptive caching](#25-hotness-tracking-and-adaptive-caching)
+      - [Key concepts](#key-concepts)
+      - [Step by step for hotness and adaptive caching](#step-by-step-for-hotness-and-adaptive-caching)
+      - [How to test hotness and adaptive caching](#how-to-test-hotness-and-adaptive-caching)
+<!--toc:end-->
+
 All scenarios share the same input (HTTP request, layer, bbox/polygon, filters),
 they all produce the same kind of output (GeoJSON FeatureCollection / possibly GML),
 but the difference is how they get the data and what logic they apply.
 There are 2 scenarios implemented for this middleware:
 
-* `baseline`: no cache, just pass-through, but with tracking.
-* `cache`: uses redis + hotness + adaptive decisions.
-* Then "sub-scenarios"/modes layered on top of `cache`:
-  * Full cache hit
-  * Partial cache hit
-  * Cache miss
-  * Kafka invalidation
-  * Hotness & adaptive caching
-  * Monitoring/metrics
+- `baseline`: no cache, just pass-through, but with tracking.
+- `cache`: uses redis + hotness + adaptive decisions.
+- Then "sub-scenarios"/modes layered on top of `cache`:
+  - Full cache hit
+  - Partial cache hit
+  - Cache miss
+  - Kafka invalidation
+  - Hotness & adaptive caching
+  - Monitoring/metrics
 
 ## 1. Baseline (no caching)
 
@@ -56,27 +81,27 @@ Client -> Middleware (tracking) -> GeoServer -> PostGIS -> Client
 
 4. **Executor calls GeoServer**
 
-    * Converts the query (layer + bbox/polygon) into a GeoServer WFS request.
-    * GeoServer forwards that to PostGIS.
-    * GeoServer returns GeoJSON/GML back to the middleware.
+    - Converts the query (layer + bbox/polygon) into a GeoServer WFS request.
+    - GeoServer forwards that to PostGIS.
+    - GeoServer returns GeoJSON/GML back to the middleware.
 
 5. **Composer wraps the result**
 
-   * Ensures the response is a valid **FeatureCollection** with consistent structure.
-   * This makes sure baseline and cache scenarios return the same shape.
+   - Ensures the response is a valid **FeatureCollection** with consistent structure.
+   - This makes sure baseline and cache scenarios return the same shape.
 
 6. **Response is sent back to client.**
 
 ### How to test the baseline
 
-* Run baseline:
+- Run baseline:
 
   ```bash
   set -o allexport; . deploy/compose/.env; set +o allexport
   go run ./cmd/middleware -scenario baseline
   ```
 
-* Run some queries or loadgen:
+- Run some queries or loadgen:
 
   ```bash
   # BBOX request
@@ -90,10 +115,10 @@ Client -> Middleware (tracking) -> GeoServer -> PostGIS -> Client
 
 After sending a request, you can check the middleware logs. It will show 3 things:
 
-* **Incoming HTTP request**: So it confirms that the middleware received a
+- **Incoming HTTP request**: So it confirms that the middleware received a
   /query request.
-* **H3 mapping**: Shows the request footprint (bbox/polygon) converted to H3 cells.
-* **Cache decision**: In baseline, it will never cache, but it will still print
+- **H3 mapping**: Shows the request footprint (bbox/polygon) converted to H3 cells.
+- **Cache decision**: In baseline, it will never cache, but it will still print
   the result of the hotness-based decision engine
 
 ## 2. Cache scenario
@@ -114,27 +139,27 @@ Client -> Middleware -> Redis -> Client
 
 1. **Same initial steps**
 
-    * `/query` → router validates → cache scenario chosen.
+    - `/query` → router validates → cache scenario chosen.
 
 2. **Map query footprint → H3 cells**
 
-    * The engine figures out which H3 cells cover the requested geometry.
-    * Uses the chosen resolution (e.g. res 7/8/9).
+    - The engine figures out which H3 cells cover the requested geometry.
+    - Uses the chosen resolution (e.g. res 7/8/9).
 
 3. **Build Redis keys**
 
-    * For each cell, it builds a key like:
+    - For each cell, it builds a key like:
 
       ```text
       demo:NR_polygon:res7:<h3cell>:filters=<normalized>:f=<hash>
       ```
 
-    * The hash ensures that if filters change,
+    - The hash ensures that if filters change,
     we don’t accidentally reuse a wrong page.
 
 4. **Do a batch read (MGET) from Redis**
 
-    * We do a single MGET call to get all the keys (so all needed h3 cells to
+    - We do a single MGET call to get all the keys (so all needed h3 cells to
     cover the query area).
 
 5. **Check freshness**
@@ -185,38 +210,38 @@ Client -> Middleware -> Redis + GeoServer/PostGIS -> Redis -> Client
 #### Step by step for partial cache hit
 
 1. **Same initial steps**
-    * `/query` → router → cache scenario → map to H3 cells.
+    - `/query` → router → cache scenario → map to H3 cells.
 
 2. **Build Redis keys**
 
 3. **Split cells into two groups**
 
-    * **Hit group**: cells with fresh entries in Redis.
-    * **Miss group**: cells that are missing or stale.
+    - **Hit group**: cells with fresh entries in Redis.
+    - **Miss group**: cells that are missing or stale.
 
 4. **Fetch only the missing cells from GeoServer**
 
-    * It issues GeoServer requests per missing cell (or per chunk).
-    * Results come back as GeoJSON.
+    - It issues GeoServer requests per missing cell (or per chunk).
+    - Results come back as GeoJSON.
 
 5. **Write newly fetched cells into Redis**
 
-    * Each new cell is stored with:
-      * SC1 header timestamp.
-      * A TTL chosen by the TTL rules (baseline or adaptive).
+    - Each new cell is stored with:
+      - SC1 header timestamp.
+      - A TTL chosen by the TTL rules (baseline or adaptive).
 
 6. **Composer merges both sources**
 
-   * Cached + freshly fetched data are merged into the final FeatureCollection.
+   - Cached + freshly fetched data are merged into the final FeatureCollection.
 
 7. **Return response**
 
 #### How to test the partial cache hit
 
-* Warm a small area (so some cells are cached).
-* Then query a slightly bigger region that overlaps warm and cold cells.
-* Check Redis key count: it should **grow over time** as new cells appear.
-* Metrics should show partial hits and decreasing latency over more runs.
+- Warm a small area (so some cells are cached).
+- Then query a slightly bigger region that overlaps warm and cold cells.
+- Check Redis key count: it should **grow over time** as new cells appear.
+- Metrics should show partial hits and decreasing latency over more runs.
 
 ### 2.3 Cache miss (cold or bypass)
 
@@ -238,10 +263,10 @@ Client -> Middleware -> GeoServer/PostGIS -> Redis -> Client
 #### Step by step for cache miss
 
 1. **Same initial steps**
-    * `/query` → router → cache scenario → map H3 cells → build keys.
+    - `/query` → router → cache scenario → map H3 cells → build keys.
 
 2. **Check Redis (MGET)**
-    * `MGET` returns **nothing** (or all stale) → all cells are misses.
+    - `MGET` returns **nothing** (or all stale) → all cells are misses.
 
 3. **Decider check**:
 
@@ -254,11 +279,11 @@ Client -> Middleware -> GeoServer/PostGIS -> Redis -> Client
 
 Query a new region you haven’t hit before, you should see:
 
-* Miss logs.
-* After that, keys appear in Redis.
-* Second query to the same region gives partial/full hit, and improved latency.
+- Miss logs.
+- After that, keys appear in Redis.
+- Second query to the same region gives partial/full hit, and improved latency.
 
-### 2.4 Data update / Kafka-driven invalidation
+### 2.4 Data update and Kafka-driven invalidation
 
 When the data in PostGIS changes, we send a message to Kafka. The
 middleware consumes it and deletes any affected cache entries so clients
@@ -287,18 +312,18 @@ Example event gets sent into Kafka:
 }
 ```
 
-* `op`: Type of change (update/insert/delete).
-* `layer`: Which layer’s data changed.
-* `bbox`: Spatial area that changed.
-* `ts`: When the change happened.
+- `op`: Type of change (update/insert/delete).
+- `layer`: Which layer’s data changed.
+- `bbox`: Spatial area that changed.
+- `ts`: When the change happened.
 
 #### Step by step for Kafka invalidation
 
 1. **Event consumption**
 
-    * Consumer receives a JSON event, it can be:
-      * **WireEvent with explicit keys**: Event already knows exact cache keys.
-      * **Spatial event**: Event has geometry/bbox; middleware has
+    - Consumer receives a JSON event, it can be:
+      - **WireEvent with explicit keys**: Event already knows exact cache keys.
+      - **Spatial event**: Event has geometry/bbox; middleware has
       to re-map it to H3.
 
 2. **Determine affected H3 cells**
@@ -331,11 +356,11 @@ Example event gets sent into Kafka:
 2. Send an invalidation event affecting that region.
 
 3. Check:
-   * Redis keys vanish for that area.
-   * Next query to that region is a cache miss & refill.
-   * Stale read metrics remain low.
+   - Redis keys vanish for that area.
+   - Next query to that region is a cache miss & refill.
+   - Stale read metrics remain low.
 
-### 2.5 Hotness tracking & adaptive caching
+### 2.5 Hotness tracking and adaptive caching
 
 Not all areas are equal. Some regions are 'hot' (lots of queries),
 others are 'cold'. We’d like to cache **hot** regions more aggressively
@@ -343,46 +368,46 @@ others are 'cold'. We’d like to cache **hot** regions more aggressively
 
 #### Key concepts
 
-* **Hotness per H3 cell**
+- **Hotness per H3 cell**
 
-  * Every time a cell is touched by a query, its hotness counter is increased.
-  * Hotness decays over time: if there are no new queries, score drops.
-  * This captures “recent popularity”, not just total hits.
+  - Every time a cell is touched by a query, its hotness counter is increased.
+  - Hotness decays over time: if there are no new queries, score drops.
+  - This captures “recent popularity”, not just total hits.
 
-* **Threshold and half-life**
+- **Threshold and half-life**
 
-  * `HOT_THRESHOLD`: if hotness > threshold ⇒ treat cell as hot.
-  * `HOT_HALF_LIFE`: how fast scores decay (e.g. 1 minute).
+  - `HOT_THRESHOLD`: if hotness > threshold ⇒ treat cell as hot.
+  - `HOT_HALF_LIFE`: how fast scores decay (e.g. 1 minute).
 
-* **Adaptive decisions**
+- **Adaptive decisions**
 
-  * The decider sees hotness and chooses:
-    * Which **H3 resolution** to use.
-    * Which **TTL tier** to apply for that cell (short/medium/long).
-  * In **dry-run mode**, it logs decisions but doesn’t actually change behavior.
-  * In **live mode**, it changes mapping & TTLs for real.
+  - The decider sees hotness and chooses:
+    - Which **H3 resolution** to use.
+    - Which **TTL tier** to apply for that cell (short/medium/long).
+  - In **dry-run mode**, it logs decisions but doesn’t actually change behavior.
+  - In **live mode**, it changes mapping & TTLs for real.
 
-#### Step by step for hotness & adaptive caching
+#### Step by step for hotness and adaptive caching
 
 1. Query comes in, and H3 cells are computed.
 
 2. For each cell:
-    * Update exp-decay hotness.
-    * The decider checks the new score.
+    - Update exp-decay hotness.
+    - The decider checks the new score.
 
 3. Decider chooses:
-    * Keep same resolution or switch to a different one.
-    * Cache or bypass.
-    * TTL length (e.g. 30s vs 5min).
+    - Keep same resolution or switch to a different one.
+    - Cache or bypass.
+    - TTL length (e.g. 30s vs 5min).
 
 4. Cache keys and TTLs are chosen according to these decisions.
 
 5. Cache and metrics reflect these choices.
 
-#### How to test hotness & adaptive caching
+#### How to test hotness and adaptive caching
 
-* Run a highly skewed workload (Zipf).
-* Watch:
-  * `adaptive_decisions_total` increasing.
-  * Number of “hot keys” rising for hot areas.
-  * TTLs for hot regions becoming longer (`redis-cli TTL <key>`).
+- Run a highly skewed workload (Zipf).
+- Watch:
+  - `adaptive_decisions_total` increasing.
+  - Number of “hot keys” rising for hot areas.
+  - TTLs for hot regions becoming longer (`redis-cli TTL <key>`).
