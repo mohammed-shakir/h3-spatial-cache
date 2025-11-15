@@ -279,6 +279,70 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		}
 	}
 
+	if applyDecision && dec.Type == adaptive.DecisionBypass {
+		body, _, err := e.exec.FetchGetFeature(ctx, q)
+		if err != nil {
+			e.logger.Error("cache bypass upstream error",
+				"scenario", "cache",
+				"layer", q.Layer,
+				"res", resToUse,
+				"cells", len(cells),
+				"decision", decisionLabel(dec.Type),
+				"reason", string(reason),
+				"run_id", e.runID,
+				"err", err,
+			)
+			http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		req := composer.Request{
+			Query: composer.QueryParams{
+				Limit:  0,
+				Offset: 0,
+			},
+			Pages: []composer.ShardPage{
+				{Body: body, CacheStatus: composer.CacheMiss},
+			},
+			AcceptHeader: r.Header.Get("Accept"),
+			OutputFormat: r.URL.Query().Get("outputFormat"),
+		}
+
+		res, err := composer.Compose(ctx, e.eng, req)
+		if err != nil {
+			e.logger.Error("cache compose error on bypass",
+				"scenario", "cache",
+				"layer", q.Layer,
+				"res", resToUse,
+				"cells", len(cells),
+				"decision", decisionLabel(dec.Type),
+				"reason", string(reason),
+				"run_id", e.runID,
+				"err", err,
+			)
+			http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		w.Header().Set("Content-Type", res.ContentType)
+		w.WriteHeader(res.StatusCode)
+		_, _ = w.Write(res.Body)
+
+		// treat as a miss (no cache involvement) and not stale
+		observability.ObserveSpatialRead("miss", false)
+
+		e.logger.Info("cache bypass",
+			"layer", q.Layer,
+			"res", resToUse,
+			"cells", len(cells),
+			"decision", decisionLabel(dec.Type),
+			"reason", string(reason),
+			"run_id", e.runID,
+			"dur", time.Since(start).String(),
+		)
+		return
+	}
+
 	// choose path based on decision type
 	useLookup := true
 	writeFill := true
@@ -346,12 +410,26 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	if len(missing) == 0 {
 		req := composer.Request{
-			Query: composer.QueryParams{Limit: 0, Offset: 0},
-			Pages: pages, AcceptHeader: r.Header.Get("Accept"),
+			Query:        composer.QueryParams{Limit: 0, Offset: 0},
+			Pages:        pages,
+			AcceptHeader: r.Header.Get("Accept"),
 			OutputFormat: r.URL.Query().Get("outputFormat"),
 		}
+
 		res, err := composer.Compose(r.Context(), e.eng, req)
 		if err != nil {
+			e.logger.Error("cache compose error on full-hit",
+				"scenario", "cache",
+				"layer", q.Layer,
+				"res", resToUse,
+				"cells", len(cells),
+				"hits", len(pages),
+				"ttl_used", ttl.String(),
+				"decision", decisionLabel(dec.Type),
+				"reason", string(reason),
+				"run_id", e.runID,
+				"err", err,
+			)
 			http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -436,12 +514,27 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		msg := strings.Builder{}
 		msg.WriteString("one or more upstream errors (")
 		msg.WriteString(fmt.Sprintf("%d/%d cells failed): ", len(errs), len(missing)))
-		for i, e := range errs {
+		for i, ferr := range errs {
 			if i > 0 {
 				msg.WriteString("; ")
 			}
-			msg.WriteString(e.Error())
+			msg.WriteString(ferr.Error())
 		}
+
+		e.logger.Error("cache upstream errors during fill",
+			"scenario", "cache",
+			"layer", q.Layer,
+			"res", resToUse,
+			"cells", len(cells),
+			"missing", len(missing),
+			"err_count", len(errs),
+			"ttl_used", ttl.String(),
+			"decision", decisionLabel(dec.Type),
+			"reason", string(reason),
+			"run_id", e.runID,
+			"sample_err", errs[0].Error(),
+		)
+
 		http.Error(w, msg.String(), http.StatusBadGateway)
 		return
 	}
@@ -453,6 +546,19 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 	res, err := composer.Compose(r.Context(), e.eng, req)
 	if err != nil {
+		e.logger.Error("cache compose error on partial-miss",
+			"scenario", "cache",
+			"layer", q.Layer,
+			"res", resToUse,
+			"cells", len(cells),
+			"hits", len(pages)-len(fetched),
+			"misses", len(missing),
+			"ttl_used", ttl.String(),
+			"decision", decisionLabel(dec.Type),
+			"reason", string(reason),
+			"run_id", e.runID,
+			"err", err,
+		)
 		http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
 		return
 	}

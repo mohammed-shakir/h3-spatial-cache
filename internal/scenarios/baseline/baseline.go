@@ -125,6 +125,11 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 	body, _, err := e.exec.FetchGetFeature(ctx, q)
 	if err != nil {
+		e.logger.Error("baseline upstream error",
+			"scenario", "baseline",
+			"layer", q.Layer,
+			"err", err,
+		)
 		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -140,8 +145,14 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		AcceptHeader: r.Header.Get("Accept"),
 		OutputFormat: r.URL.Query().Get("outputFormat"),
 	}
+
 	res, err := composer.Compose(ctx, e.eng, req)
 	if err != nil {
+		e.logger.Error("baseline compose error",
+			"scenario", "baseline",
+			"layer", q.Layer,
+			"err", err,
+		)
 		http.Error(w, "compose error: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
