@@ -177,7 +177,7 @@ In Grafana:
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
     -duration 20s \
-    -concurrency 16 \
+    -concurrency 32 \
     -bboxes 1024 \
     -centroids data/NR_polygon_centroids.csv \
     -out results \

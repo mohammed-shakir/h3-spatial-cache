@@ -6,12 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	urlpkg "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -105,6 +107,10 @@ func runAll(c cfg) error {
 		return fmt.Errorf("mkdir results root: %w", err)
 	}
 
+	if err := preflightPorts(); err != nil {
+		return fmt.Errorf("pre-flight port check failed: %w", err)
+	}
+
 	for _, sc := range c.Scenarios {
 		for _, res := range c.H3ResList {
 			for _, ttl := range c.TTLs {
@@ -162,10 +168,24 @@ func runOne(c cfg, root string, o opt) error {
 	app.Env = env
 	app.Stdout = mustFile(filepath.Join(dir, "middleware.stdout.log"))
 	app.Stderr = mustFile(filepath.Join(dir, "middleware.stderr.log"))
+	app.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
 	if err := app.Start(); err != nil {
 		return fmt.Errorf("start middleware: %w", err)
 	}
-	defer func() { _ = app.Process.Kill() }()
+
+	defer func() {
+		if app.Process == nil {
+			return
+		}
+
+		if pgid, err := syscall.Getpgid(app.Process.Pid); err == nil {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		} else {
+			_ = app.Process.Kill()
+		}
+		_ = app.Wait()
+	}()
 
 	if err := waitReady("http://localhost:8090/healthz", 30*time.Second); err != nil {
 		return fmt.Errorf("middleware not ready: %w", err)
@@ -335,6 +355,39 @@ func queryPrometheus(base, dir string, o opt, start, end time.Time) error {
 	if err := os.WriteFile(filepath.Join(dir, "prom_results.json"), js, 0o600); err != nil {
 		return fmt.Errorf("write prom_results.json: %w", err)
 	}
+	return nil
+}
+
+func preflightPorts() error {
+	httpAddr := os.Getenv("ADDR")
+	if strings.TrimSpace(httpAddr) == "" {
+		httpAddr = ":8090"
+	}
+
+	if err := checkPortAvailable(httpAddr); err != nil {
+		return err
+	}
+
+	metricsEnabled := strings.ToLower(strings.TrimSpace(os.Getenv("METRICS_ENABLED"))) == "true"
+	if metricsEnabled {
+		metricsAddr := os.Getenv("METRICS_ADDR")
+		if strings.TrimSpace(metricsAddr) == "" {
+			metricsAddr = ":9100"
+		}
+		if err := checkPortAvailable(metricsAddr); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkPortAvailable(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("port %s is already in use: %w", addr, err)
+	}
+	_ = ln.Close()
 	return nil
 }
 
