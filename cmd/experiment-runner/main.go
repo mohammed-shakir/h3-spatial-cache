@@ -41,6 +41,8 @@ type cfg struct {
 	Invalidations []string
 	CentroidsPath string
 	ClearCache    bool
+	ZipfS         float64
+	ZipfV         float64
 }
 
 func main() {
@@ -66,6 +68,8 @@ func parseFlags() cfg {
 	flag.DurationVar(&c.Duration, "duration", 2*time.Minute, "Per-combo load duration")
 	flag.IntVar(&c.Concurrency, "concurrency", 32, "Loadgen concurrency")
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
+	flag.Float64Var(&c.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")
+	flag.Float64Var(&c.ZipfV, "zipf-v", 1.0, "Zipf parameter v (>=1)")
 	flag.StringVar(&c.OutRoot, "out", "results", "Output root dir")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Only create directory tree; no services")
 	flag.StringVar(&c.CentroidsPath, "centroids", "", "Optional centroid CSV file (id,lon,lat) to forward to loadgen")
@@ -212,6 +216,8 @@ func runOne(c cfg, root string, o opt) error {
 		"-layer", c.Layer,
 		"-concurrency", fmt.Sprintf("%d", c.Concurrency),
 		"-duration", c.Duration.String(),
+		"-zipf-s", fmt.Sprintf("%g", c.ZipfS),
+		"-zipf-v", fmt.Sprintf("%g", c.ZipfV),
 		"-bboxes", fmt.Sprintf("%d", c.BBoxes),
 		"-out", outPrefix,
 		"-append-ts=false",

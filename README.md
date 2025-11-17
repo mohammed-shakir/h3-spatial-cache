@@ -199,8 +199,8 @@ Then run the load generator:
 go run ./cmd/baseline-loadgen \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -concurrency 32 \
   -duration 20s \
+  -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
@@ -230,6 +230,8 @@ go run ./cmd/experiment-runner \
   -layer demo:NR_polygon \
   -duration 20s \
   -concurrency 32 \
+  -zipf-s 1.3 \
+  -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
   -out results \
@@ -249,6 +251,8 @@ go run ./cmd/experiment-runner \
   -layer demo:NR_polygon \
   -duration 20s \
   -concurrency 32 \
+  -zipf-s 1.3 \
+  -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
   -out results \

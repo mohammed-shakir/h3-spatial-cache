@@ -124,15 +124,15 @@ In Grafana:
   go run ./cmd/baseline-loadgen \
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
-    -concurrency 32 \
     -duration 20s \
+    -concurrency 32 \
     -zipf-s 1.3 \
     -zipf-v 1.0 \
     -bboxes 1024 \
     -timeout 5s \
     -centroids data/NR_polygon_centroids.csv \
     -out results/baseline \
-    -append-ts=false \
+    -append-ts=true \
     -ts-format=iso
   ```
 
@@ -159,6 +159,8 @@ In Grafana:
     -layer demo:NR_polygon \
     -duration 20s \
     -concurrency 32 \
+    -zipf-s 1.3 \
+    -zipf-v 1.0 \
     -bboxes 1024 \
     -centroids data/NR_polygon_centroids.csv \
     -out results \
@@ -178,6 +180,8 @@ In Grafana:
     -layer demo:NR_polygon \
     -duration 20s \
     -concurrency 32 \
+    -zipf-s 1.3 \
+    -zipf-v 1.0 \
     -bboxes 1024 \
     -centroids data/NR_polygon_centroids.csv \
     -out results \
