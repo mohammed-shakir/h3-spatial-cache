@@ -261,7 +261,6 @@ func main() {
 	}
 
 	imax := uint64(len(bboxes)) - 1
-	zipfDist := rand.NewZipf(r, cfg.ZipfS, cfg.ZipfV, imax)
 
 	// HTTP client for load generation
 	httpClient := &http.Client{
@@ -329,10 +328,12 @@ func main() {
 	var wg sync.WaitGroup
 	wg.Add(cfg.Concurrency)
 
-	// each worker continuously sends queries
-	for range cfg.Concurrency {
-		go func() {
+	for workerID := range cfg.Concurrency {
+		go func(id int) {
 			defer wg.Done()
+
+			rWorker := rand.New(rand.NewSource(seed + int64(id) + 1))
+			zipfDist := rand.NewZipf(rWorker, cfg.ZipfS, cfg.ZipfV, imax)
 			for {
 				select {
 				case <-ctx.Done():
@@ -388,7 +389,7 @@ func main() {
 					return
 				}
 			}
-		}()
+		}(workerID)
 	}
 
 	// close samples channel
