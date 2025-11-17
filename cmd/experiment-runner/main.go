@@ -40,6 +40,7 @@ type cfg struct {
 	Hots          []string
 	Invalidations []string
 	CentroidsPath string
+	ClearCache    bool
 }
 
 func main() {
@@ -73,6 +74,7 @@ func parseFlags() cfg {
 	flag.StringVar(&ttls, "ttls", "30s,60s", "TTLs CSV (Cache TTL Default)")
 	flag.StringVar(&hots, "hots", "5,10", "Hot thresholds CSV")
 	flag.StringVar(&invs, "invalidations", "ttl,kafka", "Invalidation modes CSV")
+	flag.BoolVar(&c.ClearCache, "clear-cache", true, "Flush Redis before each cache scenario run")
 
 	flag.Parse()
 
@@ -148,6 +150,12 @@ func runOne(c cfg, root string, o opt) error {
 	}
 	if c.DryRun {
 		return nil
+	}
+
+	if c.ClearCache && o.Scenario == "cache" {
+		if err := clearRedis(); err != nil {
+			return fmt.Errorf("clear redis before scenario=%s: %w", o.Scenario, err)
+		}
 	}
 
 	env := os.Environ()
@@ -388,6 +396,25 @@ func checkPortAvailable(addr string) error {
 		return fmt.Errorf("port %s is already in use: %w", addr, err)
 	}
 	_ = ln.Close()
+	return nil
+}
+
+func clearRedis() error {
+	addr := os.Getenv("REDIS_ADDR")
+	if strings.TrimSpace(addr) == "" {
+		addr = "localhost:6379"
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return fmt.Errorf("dial redis %s: %w", addr, err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.Write([]byte("FLUSHALL\r\n")); err != nil {
+		return fmt.Errorf("write FLUSHALL to redis %s: %w", addr, err)
+	}
+
 	return nil
 }
 
