@@ -125,10 +125,11 @@ In Grafana:
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
     -concurrency 32 \
-    -duration 10s \
+    -duration 20s \
     -zipf-s 1.3 \
     -zipf-v 1.0 \
-    -bboxes 128 \
+    -bboxes 1024 \
+    -timeout 5s \
     -centroids data/NR_polygon_centroids.csv \
     -out results/baseline \
     -append-ts=false \
@@ -156,9 +157,9 @@ In Grafana:
     -prom http://localhost:9090 \
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
-    -duration 10s \
+    -duration 20s \
     -concurrency 32 \
-    -bboxes 128 \
+    -bboxes 1024 \
     -centroids data/NR_polygon_centroids.csv \
     -out results \
     -scenarios baseline,cache \
@@ -175,9 +176,9 @@ In Grafana:
     -prom http://localhost:9090 \
     -target http://localhost:8090/query \
     -layer demo:NR_polygon \
-    -duration 10s \
+    -duration 20s \
     -concurrency 16 \
-    -bboxes 64 \
+    -bboxes 1024 \
     -centroids data/NR_polygon_centroids.csv \
     -out results \
     -scenarios cache \
