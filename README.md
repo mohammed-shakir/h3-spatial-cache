@@ -60,19 +60,19 @@ system performance modeling to test and validate this specific architectural app
 
 - `cmd/`: Main binaries/applications.
 - `internal/core/`: Core middleware components (HTTP server, router, executor,
-config, observability, OGC adapter, etc.).
+  config, observability, OGC adapter, etc.).
 - `internal/scenarios/`: Scenario-specific behavior used for experiments
-(baseline, cache, etc.).
+  (baseline, cache, etc.).
 - `internal/*`: Shared internal building blocks (cache, mapper, hotness,
-decision engine, metrics, invalidation, logger, etc.) used by core and scenarios.
+  decision engine, metrics, invalidation, logger, etc.) used by core and scenarios.
 - `pkg/`: Reusable modules that can be imported by multiple binaries.
 - `config/`: Scenario/runtime configuration files that select which scenario
-and invalidation mode to run.
+  and invalidation mode to run.
 - `deploy/`: Docker stuff + monitoring stuff.
 - `docs/`: Documentation.
 - `integration/`: Integration tests.
 - `scripts/`: Helper scripts (start/stop dev stack, capture stats,
-seed database, etc.).
+  seed database, etc.).
 - `testdata/`: Test fixtures (e.g. GeoJSON aggregator inputs/expected outputs).
 - `results/`: Load test and experiment outputs.
 
@@ -146,12 +146,11 @@ This script:
   - **Alertmanager**
   - (Optional) the `app` middleware (only if run with `--profile app`)
 
-- Waits until **PostGIS**, **Redis**, **Kafka**, and **GeoServer** are *healthy*.
+- Waits until **PostGIS**, **Redis**, **Kafka**, and **GeoServer** are _healthy_.
 
 - Ensures the Kafka topic (default: `spatial-updates`) is created.
 
 - Configures GeoServer:
-
   - Creates the workspace (default: `demo`)
   - Creates/updates the PostGIS datastore
   - Publishes all available feature types (tables) as GeoServer layers
@@ -267,7 +266,7 @@ go run ./cmd/experiment-runner \
 random bboxes)
 
 > NOTE: When running the experiment-runner, do not run the middleware, because
-the experiment-runner starts its own instance of the middleware internally.
+> the experiment-runner starts its own instance of the middleware internally.
 
 Optionally, you can also capture container cpu/memory stats during the load test:
 
