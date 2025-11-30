@@ -61,11 +61,11 @@ func composerEngine() (eng composer.Engine) {
 
 type passAdapter struct{}
 
-func (*passAdapter) MergeWithQuery(_ context.Context, _ composer.QueryParams, parts [][]byte) ([]byte, error) {
-	if len(parts) == 0 {
+func (*passAdapter) MergeWithQuery(_ context.Context, _ composer.QueryParams, pages []composer.ShardPage) ([]byte, error) {
+	if len(pages) == 0 {
 		return []byte(`{"type":"FeatureCollection","features":[]}`), nil
 	}
-	return parts[0], nil
+	return pages[0].Body, nil
 }
 
 func TestBaselineStreaming_On_UsesProxy(t *testing.T) {

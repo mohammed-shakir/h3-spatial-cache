@@ -9,9 +9,9 @@ import (
 
 type fakeAgg struct{}
 
-func (f *fakeAgg) MergeWithQuery(_ context.Context, q composer.QueryParams, parts [][]byte) ([]byte, error) {
+func (f *fakeAgg) MergeWithQuery(_ context.Context, q composer.QueryParams, pages []composer.ShardPage) ([]byte, error) {
 	_ = q
-	_ = parts
+	_ = pages
 	return []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","id":"A","geometry":null,"properties":{"n":1}}]}`), nil
 }
 

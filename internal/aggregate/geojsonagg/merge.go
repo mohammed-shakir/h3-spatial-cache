@@ -27,6 +27,7 @@ func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 	diag := Diagnostics{}
 	if len(req.Shards) == 0 {
 		out := []byte(`{"type":"FeatureCollection","features":[]}`)
+		diag.HitClass = Miss
 		return out, diag, nil
 	}
 
