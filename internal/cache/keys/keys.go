@@ -7,6 +7,8 @@ import (
 	"unicode"
 
 	"github.com/cespare/xxhash/v2"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 )
 
 // generate a cache key for the given parameters
@@ -110,4 +112,9 @@ func isAlphaNum(r rune) bool {
 	return (r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
 		unicode.IsDigit(r)
+}
+
+func CellIndexKey(layer string, res int, cell string, filters model.Filters) string {
+	base := Key(layer, res, cell, string(filters))
+	return "idx:" + base
 }

@@ -27,3 +27,5 @@ type QueryRequest struct {
 	H3Res   int
 	Cells   Cells
 }
+
+type Filters string
