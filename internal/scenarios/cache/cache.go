@@ -262,12 +262,16 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 		observability.ObserveAdaptiveDecision(decisionLabel(dec.Type), string(reason))
 		e.logger.Info("adaptive_decision",
-			"run_id", e.runID, "layer", q.Layer,
-			"decision", decisionLabel(dec.Type), "reason", string(reason),
-			"resolution", dec.Resolution, "ttl", dec.TTL.String(),
+			"run_id", e.runID,
+			"layer", q.Layer,
+			"decision", decisionLabel(dec.Type),
+			"reason", string(reason),
+			"resolution", dec.Resolution,
+			"ttl", dec.TTL.String(),
 			"cells", len(cells),
 			"dry_run", e.adaptiveDryRun,
-			"dur", time.Since(decideStart).String())
+			"dur", time.Since(decideStart).String(),
+		)
 	}
 
 	// apply resolution and TTL based on decision
@@ -295,7 +299,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			e.logger.Error("cache bypass upstream error",
 				"scenario", "cache",
 				"layer", q.Layer,
-				"res", resToUse,
+				"res_to_use", resToUse,
 				"cells", len(cells),
 				"decision", decisionLabel(dec.Type),
 				"reason", string(reason),
@@ -343,7 +347,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 		e.logger.Info("cache bypass",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
 			"decision", decisionLabel(dec.Type),
 			"reason", string(reason),
@@ -360,6 +364,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		missing        []string
 		indexHitCount  int
 		indexMissCount int
+		allIDs         []string
 	)
 
 	if e.idx == nil || e.fs == nil {
@@ -378,7 +383,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		missingCells := make([]string, 0, len(cells))
 
 		allIDsSet := make(map[string]struct{})
-		var allIDs []string
+		allIDs = nil
 
 		for _, cell := range cells {
 			ids, err := e.idx.GetIDs(ctx, q.Layer, resToUse, cell, model.Filters(q.Filters))
@@ -499,7 +504,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 				e.logger.Error("cache compose error on full-hit (feature-centric)",
 					"scenario", "cache",
 					"layer", q.Layer,
-					"res", resToUse,
+					"res_to_use", resToUse,
 					"cells", len(cells),
 					"index_hits", indexHitCount,
 					"index_misses", indexMissCount,
@@ -524,7 +529,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 			e.logger.Info("cache full-hit (feature-centric)",
 				"layer", q.Layer,
-				"res", resToUse,
+				"res_to_use", resToUse,
 				"cells", len(cells),
 				"index_hits", indexHitCount,
 				"index_misses", indexMissCount,
@@ -618,7 +623,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		e.logger.Error("cache upstream errors during fill",
 			"scenario", "cache",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
 			"missing", len(missing),
 			"err_count", len(errs),
@@ -644,7 +649,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		e.logger.Error("cache compose error on partial-miss (feature-centric)",
 			"scenario", "cache",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
 			"index_hits", indexHitCount,
 			"index_misses", indexMissCount,
@@ -665,11 +670,12 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	observability.ObserveSpatialRead("miss", false)
 	e.logger.Info("cache partial-miss (feature-centric)",
 		"layer", q.Layer,
-		"res", resToUse,
+		"res_to_use", resToUse,
 		"cells", len(cells),
 		"index_hits", indexHitCount,
 		"index_misses", indexMissCount,
 		"missing_cells", len(missing),
+		"unique_ids", len(allIDs),
 		"ttl_used", ttl.String(),
 		"fill_dur", time.Since(fillStart).String(),
 		"total_dur", time.Since(start).String(),

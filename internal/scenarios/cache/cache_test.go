@@ -417,3 +417,91 @@ func TestCache_InputValidationError_Returns400(t *testing.T) {
 		t.Fatalf("expected non-empty body on invalid query")
 	}
 }
+
+func TestCache_MultiResolution_WarmCoarseReadFine_FeaturesReused(t *testing.T) {
+	ctx := context.Background()
+
+	gs := &gsDouble{}
+	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
+	defer srv.Close()
+
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+
+	baseCfg := config.FromEnv()
+	baseCfg.Scenario = "cache"
+	baseCfg.RedisAddr = mr.Addr()
+	baseCfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
+	baseCfg.CacheTTLDefault = 30 * time.Second
+	baseCfg.AdaptiveEnabled = false
+	baseCfg.AdaptiveDryRun = false
+
+	// coarse handler (res=6)
+	cfg6 := baseCfg
+	cfg6.H3Res = 6
+	cfg6.H3ResMin = 6
+	cfg6.H3ResMax = 6
+
+	// fine handler (res=8)
+	cfg8 := baseCfg
+	cfg8.H3Res = 8
+	cfg8.H3ResMin = 8
+	cfg8.H3ResMax = 8
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h6, err := scenarios.New("cache", cfg6, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario res=6: %v", err)
+	}
+	h8, err := scenarios.New("cache", cfg8, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario res=8: %v", err)
+	}
+
+	layer := "demo:NR_polygon"
+	outer := model.BBox{X1: 18.00, Y1: 59.30, X2: 18.20, Y2: 59.40, SRID: "EPSG:4326"}
+	inner := model.BBox{X1: 18.05, Y1: 59.32, X2: 18.10, Y2: 59.35, SRID: "EPSG:4326"}
+
+	// 1) warm coarse (res=6)
+	req1 := httptest.NewRequest(http.MethodGet, "/query", nil)
+	qv1 := url.Values{}
+	qv1.Set("layer", layer)
+	qv1.Set("bbox", outer.String())
+	req1.URL.RawQuery = qv1.Encode()
+	rr1 := httptest.NewRecorder()
+	h6.HandleQuery(ctx, rr1, req1, model.QueryRequest{Layer: layer, BBox: &outer})
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("warm coarse status=%d want 200", rr1.Code)
+	}
+	callsAfterCoarse := atomic.LoadInt64(&gs.calls)
+
+	// 2) fine query inside (res=8)
+	req2 := httptest.NewRequest(http.MethodGet, "/query", nil)
+	qv2 := url.Values{}
+	qv2.Set("layer", layer)
+	qv2.Set("bbox", inner.String())
+	req2.URL.RawQuery = qv2.Encode()
+	rr2 := httptest.NewRecorder()
+	h8.HandleQuery(ctx, rr2, req2, model.QueryRequest{Layer: layer, BBox: &inner})
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("fine status=%d want 200", rr2.Code)
+	}
+
+	callsAfterFine := atomic.LoadInt64(&gs.calls)
+	if callsAfterFine == 0 || callsAfterFine < callsAfterCoarse {
+		t.Fatalf("expected additional upstream calls for fine res; coarse=%d fine=%d",
+			callsAfterCoarse, callsAfterFine)
+	}
+
+	// Check that we didn't explode number of feature keys: they should be <= number of upstream calls.
+	var featKeys int
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, "feat:") {
+			featKeys++
+		}
+	}
+	if featKeys > int(callsAfterFine) {
+		t.Fatalf("unexpectedly many feature keys=%d vs upstream calls=%d", featKeys, callsAfterFine)
+	}
+}

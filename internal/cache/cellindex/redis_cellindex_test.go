@@ -121,3 +121,96 @@ func TestRedisCellIndex_EmptyIDs_DeletesKeyAndReturnsNil(t *testing.T) {
 		t.Fatalf("expected nil ids after empty SetIDs, got=%v", ids)
 	}
 }
+
+func TestRedisCellIndex_DistinctKeysPerResolution(t *testing.T) {
+	cli, mr := newMini(t)
+	idx := NewRedisIndex(cli)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+
+	layer := "demo:NR_polygon"
+	cell := "892a100d2b3ffff"
+	filters := model.Filters("status='active'")
+
+	ids6 := []string{"A"}
+	ids8 := []string{"B"}
+
+	if err := idx.SetIDs(ctx, layer, 6, cell, filters, ids6, time.Minute); err != nil {
+		t.Fatalf("SetIDs res=6: %v", err)
+	}
+	if err := idx.SetIDs(ctx, layer, 8, cell, filters, ids8, time.Minute); err != nil {
+		t.Fatalf("SetIDs res=8: %v", err)
+	}
+
+	got6, err := idx.GetIDs(ctx, layer, 6, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs res=6: %v", err)
+	}
+	got8, err := idx.GetIDs(ctx, layer, 8, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs res=8: %v", err)
+	}
+
+	if !reflect.DeepEqual(got6, ids6) {
+		t.Fatalf("res=6 ids=%v want=%v", got6, ids6)
+	}
+	if !reflect.DeepEqual(got8, ids8) {
+		t.Fatalf("res=8 ids=%v want=%v", got8, ids8)
+	}
+
+	k6 := keys.CellIndexKey(layer, 6, cell, filters)
+	k8 := keys.CellIndexKey(layer, 8, cell, filters)
+	if k6 == k8 {
+		t.Fatalf("cell index keys must differ across resolutions; got %q", k6)
+	}
+	if !mr.Exists(k6) || !mr.Exists(k8) {
+		t.Fatalf("expected both keys to exist; k6Exists=%v k8Exists=%v", mr.Exists(k6), mr.Exists(k8))
+	}
+}
+
+func TestRedisCellIndex_ClearOneResolutionKeepsOther(t *testing.T) {
+	cli, mr := newMini(t)
+	idx := NewRedisIndex(cli)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+
+	layer := "demo:layer"
+	cell := "892a100d2b3ffff"
+	filters := model.Filters("a=1")
+
+	if err := idx.SetIDs(ctx, layer, 6, cell, filters, []string{"A"}, time.Minute); err != nil {
+		t.Fatalf("SetIDs res=6: %v", err)
+	}
+	if err := idx.SetIDs(ctx, layer, 8, cell, filters, []string{"B"}, time.Minute); err != nil {
+		t.Fatalf("SetIDs res=8: %v", err)
+	}
+
+	k6 := keys.CellIndexKey(layer, 6, cell, filters)
+	k8 := keys.CellIndexKey(layer, 8, cell, filters)
+	if !mr.Exists(k6) || !mr.Exists(k8) {
+		t.Fatalf("expected both res=6 and res=8 keys to exist")
+	}
+
+	// simulate invalidation only for res=6
+	if err := cli.Del(ctx, k6); err != nil {
+		t.Fatalf("Del res=6: %v", err)
+	}
+
+	ids6, err := idx.GetIDs(ctx, layer, 6, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs res=6: %v", err)
+	}
+	if ids6 != nil {
+		t.Fatalf("expected nil ids for res=6 after deletion, got %v", ids6)
+	}
+
+	ids8, err := idx.GetIDs(ctx, layer, 8, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs res=8: %v", err)
+	}
+	if !reflect.DeepEqual(ids8, []string{"B"}) {
+		t.Fatalf("expected res=8 ids unaffected, got %v", ids8)
+	}
+}

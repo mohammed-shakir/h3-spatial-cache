@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -251,4 +252,58 @@ func keysOf(m map[string][]byte) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestFetchCell_MultiResolution_SafeReuseOfFeatures(t *testing.T) {
+	fs := &recordingFeatureStore{}
+	idx := &recordingCellIndex{}
+
+	body := `{"type":"FeatureCollection","features":[` +
+		`{"type":"Feature","id":"foo","geometry":null,"properties":{"name":"a"}},` +
+		`{"type":"Feature","id":"bar","geometry":null,"properties":{"name":"b"}}` +
+		`]}`
+
+	e := newTestEngineForV2(t, body, fs, idx)
+
+	ctx := context.Background()
+	q := model.QueryRequest{Layer: "demo:layer"}
+	cell := "892a100d2b3ffff"
+	ttl := 2 * time.Minute
+
+	// coarse res
+	resCoarse := 6
+	r1 := e.fetchCell(ctx, q, cell, resCoarse, ttl)
+	if r1.err != nil {
+		t.Fatalf("fetchCell coarse err: %v", r1.err)
+	}
+
+	// fine res
+	resFine := 8
+	r2 := e.fetchCell(ctx, q, cell, resFine, ttl)
+	if r2.err != nil {
+		t.Fatalf("fetchCell fine err: %v", r2.err)
+	}
+
+	// We should have written to feature store twice, but with the same IDs.
+	if len(fs.calls) != 2 {
+		t.Fatalf("expected 2 PutFeatures calls (coarse+fine), got %d", len(fs.calls))
+	}
+	firstIDs := keysOf(fs.calls[0].feats)
+	secondIDs := keysOf(fs.calls[1].feats)
+
+	if !reflect.DeepEqual(firstIDs, secondIDs) {
+		t.Fatalf("feature IDs differ between resolutions; coarse=%v fine=%v", firstIDs, secondIDs)
+	}
+
+	// Cell index entries must differ by resolution, but both contain the same IDs.
+	if len(idx.calls) != 2 {
+		t.Fatalf("expected 2 SetIDs calls, got %d", len(idx.calls))
+	}
+	if idx.calls[0].res == idx.calls[1].res {
+		t.Fatalf("cell index calls must use different resolutions")
+	}
+	if !reflect.DeepEqual(idx.calls[0].ids, idx.calls[1].ids) {
+		t.Fatalf("cell index IDs differ between resolutions; coarse=%v fine=%v",
+			idx.calls[0].ids, idx.calls[1].ids)
+	}
 }
