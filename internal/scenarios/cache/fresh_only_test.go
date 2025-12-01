@@ -2,17 +2,18 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
-	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
@@ -33,26 +34,119 @@ func (f fakeStore) MGet(keyList []string) (map[string][]byte, error) {
 func (f fakeStore) Set(string, []byte, time.Duration) error { return nil }
 func (f fakeStore) Del(...string) error                     { return nil }
 
+type fakeFeatureStore struct {
+	mu sync.Mutex
+	m  map[string]map[string][]byte
+}
+
+func (f *fakeFeatureStore) MGetFeatures(ctx context.Context, layer string, ids []string) (map[string][]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string][]byte, len(ids))
+	lm := f.m[layer]
+	for _, id := range ids {
+		if b, ok := lm[id]; ok {
+			out[id] = append([]byte(nil), b...)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeFeatureStore) PutFeatures(
+	ctx context.Context,
+	layer string,
+	feats map[string][]byte,
+	ttl time.Duration, // ttl ignored in fake
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.m == nil {
+		f.m = make(map[string]map[string][]byte)
+	}
+	lm := f.m[layer]
+	if lm == nil {
+		lm = make(map[string][]byte)
+		f.m[layer] = lm
+	}
+	for id, b := range feats {
+		lm[id] = append([]byte(nil), b...)
+	}
+	return nil
+}
+
+type cellKey struct {
+	layer string
+	res   int
+	cell  string
+	filt  model.Filters
+}
+
+type fakeCellIndex struct {
+	mu sync.Mutex
+	m  map[cellKey][]string
+}
+
+func (f *fakeCellIndex) GetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cell string,
+	filters model.Filters,
+) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	ids := f.m[cellKey{layer: layer, res: res, cell: cell, filt: filters}]
+	return append([]string(nil), ids...), nil
+}
+
+func (f *fakeCellIndex) SetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cell string,
+	filters model.Filters,
+	ids []string,
+	ttl time.Duration, // ttl ignored in fake
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.m == nil {
+		f.m = make(map[cellKey][]string)
+	}
+	k := cellKey{layer: layer, res: res, cell: cell, filt: filters}
+	f.m[k] = append([]string(nil), ids...)
+	return nil
+}
+
 func newEngineForTest() *Engine {
 	disc := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})
 	return &Engine{
-		logger:     slog.New(disc),
-		res:        8,
-		minRes:     8,
-		maxRes:     8,
-		mapr:       h3mapper.New(),
-		eng:        composer.Engine{V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced())},
-		store:      fakeStore{m: map[string][]byte{}},
+		logger: slog.New(disc),
+		res:    8,
+		minRes: 8,
+		maxRes: 8,
+		mapr:   h3mapper.New(),
+		eng:    composer.Engine{V2: composer.NewGeoJSONV2Adapter(geojsonagg.NewAdvanced())},
+
+		store: fakeStore{m: map[string][]byte{}},
+
+		fs:  &fakeFeatureStore{},
+		idx: &fakeCellIndex{},
+
 		owsURL:     &url.URL{Scheme: "http", Host: "example.invalid"},
 		ttlDefault: time.Second,
 		ttlMap:     map[string]time.Duration{},
 		maxWorkers: 1,
 		queueSize:  1,
 		opTimeout:  150 * time.Millisecond,
-		// adaptive off for these tests; we only test the serveFreshOnly gate
+
 		adaptiveEnabled: false,
 		adaptiveDryRun:  false,
-		serveFreshOnly:  true, // toggled per test when needed
+		serveFreshOnly:  true,
 		runID:           "test",
 	}
 }
@@ -88,23 +182,34 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 			BBox:  &model.BBox{X1: 0, Y1: 0, X2: 0.01, Y2: 0.01, SRID: "EPSG:4326"},
 		}
 	}
-	const fc = `{"type":"FeatureCollection","features":[]}`
+	const featureTemplate = `{"type":"Feature","id":"%s","geometry":null,"properties":{"name":"%s"}}`
 
 	t.Run("a) full hit fresh → 200", func(t *testing.T) {
 		e := newEngineForTest()
 		q := makeReq()
+
 		observability.SetLayerInvalidatedAt(q.Layer, time.Time{})
+
 		cells, err := e.cellsForRes(q, e.res)
 		if err != nil || len(cells) == 0 {
 			t.Fatalf("cells: %v len=%d", err, len(cells))
 		}
-		// seed full fresh hits
-		fs := e.store.(fakeStore)
-		for _, c := range cells {
-			k := keys.Key(q.Layer, e.res, c, q.Filters)
-			fs.m[k] = encodeCacheValue([]byte(fc))
+
+		fs := e.fs.(*fakeFeatureStore)
+		idx := e.idx.(*fakeCellIndex)
+
+		ctx := context.Background()
+		for i, c := range cells {
+			id := "id-" + fmt.Sprint(i)
+			feat := fmt.Appendf(nil, featureTemplate, id, id)
+
+			if err := fs.PutFeatures(ctx, q.Layer, map[string][]byte{id: feat}, time.Minute); err != nil {
+				t.Fatalf("seed feature store: %v", err)
+			}
+			if err := idx.SetIDs(ctx, q.Layer, e.res, c, model.Filters(q.Filters), []string{id}, time.Minute); err != nil {
+				t.Fatalf("seed cell index: %v", err)
+			}
 		}
-		e.store = fs
 
 		rr := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/query", nil)
@@ -123,19 +228,29 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 	t.Run("b) full hit stale + flag → 412 (reason=stale)", func(t *testing.T) {
 		e := newEngineForTest()
 		q := makeReq()
-		cells, _ := e.cellsForRes(q, e.res)
-		fs := e.store.(fakeStore)
-		var wroteAt int64
-		for _, c := range cells {
-			k := keys.Key(q.Layer, e.res, c, q.Filters)
-			val := encodeCacheValue([]byte(fc))
-			_, w, _ := decodeCacheValue(val)
-			wroteAt = w
-			fs.m[k] = val
+
+		cells, err := e.cellsForRes(q, e.res)
+		if err != nil || len(cells) == 0 {
+			t.Fatalf("cells: %v len=%d", err, len(cells))
 		}
-		e.store = fs
-		// make cache stale vs layer
-		observability.SetLayerInvalidatedAt(q.Layer, time.Unix(wroteAt+1, 0))
+
+		fs := e.fs.(*fakeFeatureStore)
+		idx := e.idx.(*fakeCellIndex)
+		ctx := context.Background()
+
+		for i, c := range cells {
+			id := "id-" + fmt.Sprint(i)
+			feat := fmt.Appendf(nil, featureTemplate, id, id)
+
+			if err := fs.PutFeatures(ctx, q.Layer, map[string][]byte{id: feat}, time.Minute); err != nil {
+				t.Fatalf("seed feature store: %v", err)
+			}
+			if err := idx.SetIDs(ctx, q.Layer, e.res, c, model.Filters(q.Filters), []string{id}, time.Minute); err != nil {
+				t.Fatalf("seed cell index: %v", err)
+			}
+		}
+
+		observability.SetLayerInvalidatedAt(q.Layer, time.Now())
 
 		rr := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/query", nil)
@@ -155,16 +270,31 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 	t.Run("c) partial miss + flag → 412 (reason=miss)", func(t *testing.T) {
 		e := newEngineForTest()
 		q := makeReq()
+
 		observability.SetLayerInvalidatedAt(q.Layer, time.Time{})
-		cells, _ := e.cellsForRes(q, e.res)
+
+		cells, err := e.cellsForRes(q, e.res)
+		if err != nil {
+			t.Fatalf("cells: %v", err)
+		}
 		if len(cells) < 2 {
 			t.Skip("need at least two cells for partial-miss assertion")
 		}
-		fs := e.store.(fakeStore)
-		// only seed one hit -> others are misses
-		k := keys.Key(q.Layer, e.res, cells[0], q.Filters)
-		fs.m[k] = encodeCacheValue([]byte(fc))
-		e.store = fs
+
+		fs := e.fs.(*fakeFeatureStore)
+		idx := e.idx.(*fakeCellIndex)
+		ctx := context.Background()
+
+		{
+			id := "id-hit"
+			feat := fmt.Appendf(nil, featureTemplate, id, id)
+			if err := fs.PutFeatures(ctx, q.Layer, map[string][]byte{id: feat}, time.Minute); err != nil {
+				t.Fatalf("seed feature store: %v", err)
+			}
+			if err := idx.SetIDs(ctx, q.Layer, e.res, cells[0], model.Filters(q.Filters), []string{id}, time.Minute); err != nil {
+				t.Fatalf("seed cell index: %v", err)
+			}
+		}
 
 		before := gatherCounter(reg, "miss")
 		rr := httptest.NewRecorder()
@@ -185,21 +315,31 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 
 	t.Run("d) flag off → never 412", func(t *testing.T) {
 		e := newEngineForTest()
-		e.serveFreshOnly = false // disable global gate
+		e.serveFreshOnly = false
+
 		q := makeReq()
-		observability.SetLayerInvalidatedAt(q.Layer, time.Time{})
-		cells, _ := e.cellsForRes(q, e.res)
-		fs := e.store.(fakeStore)
-		var wroteAt int64
-		for _, c := range cells {
-			k := keys.Key(q.Layer, e.res, c, q.Filters)
-			val := encodeCacheValue([]byte(fc))
-			_, w, _ := decodeCacheValue(val)
-			wroteAt = w
-			fs.m[k] = val
+		cells, err := e.cellsForRes(q, e.res)
+		if err != nil || len(cells) == 0 {
+			t.Fatalf("cells: %v len=%d", err, len(cells))
 		}
-		e.store = fs
-		observability.SetLayerInvalidatedAt(q.Layer, time.Unix(wroteAt+1, 0)) // would be stale, but gate is off
+
+		fs := e.fs.(*fakeFeatureStore)
+		idx := e.idx.(*fakeCellIndex)
+		ctx := context.Background()
+
+		for i, c := range cells {
+			id := "id-" + fmt.Sprint(i)
+			feat := fmt.Appendf(nil, featureTemplate, id, id)
+
+			if err := fs.PutFeatures(ctx, q.Layer, map[string][]byte{id: feat}, time.Minute); err != nil {
+				t.Fatalf("seed feature store: %v", err)
+			}
+			if err := idx.SetIDs(ctx, q.Layer, e.res, c, model.Filters(q.Filters), []string{id}, time.Minute); err != nil {
+				t.Fatalf("seed cell index: %v", err)
+			}
+		}
+
+		observability.SetLayerInvalidatedAt(q.Layer, time.Now())
 
 		rr := httptest.NewRecorder()
 		r := httptest.NewRequest("GET", "/query", nil)
@@ -208,7 +348,6 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 		if rr.Code != 200 {
 			t.Fatalf("want 200 with flag off, got %d", rr.Code)
 		}
-		// no new increments expected (assert delta)
 		before := gatherCounter(reg, "stale")
 		after := gatherCounter(reg, "stale")
 		if after-before != 0 {
