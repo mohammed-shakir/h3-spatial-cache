@@ -1,3 +1,4 @@
+// Package model defines core domain types shared across the service.
 package model
 
 import "fmt"
@@ -8,7 +9,7 @@ type BBox struct {
 	SRID   string
 }
 
-// representation matching wfs/wms bbox format
+// String representation matching wfs/wms bbox format
 func (b BBox) String() string {
 	return fmt.Sprintf("%.6f,%.6f,%.6f,%.6f,%s", b.X1, b.Y1, b.X2, b.Y2, b.SRID)
 }

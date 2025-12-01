@@ -1,3 +1,4 @@
+// Package v2 provides another cache store implementation.
 package v2
 
 import (

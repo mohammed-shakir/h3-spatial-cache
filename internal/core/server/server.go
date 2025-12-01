@@ -1,3 +1,4 @@
+// Package server configures and runs the HTTP server.
 package server
 
 import (
@@ -16,7 +17,7 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/router"
 )
 
-// sets up http and starts serving
+// Run sets up http and starts serving
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, handler router.QueryHandler, rr health.ReadinessReporter) error {
 	r := chi.NewRouter()
 	r.Use(middleware.Recover())

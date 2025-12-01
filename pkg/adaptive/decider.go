@@ -1,3 +1,4 @@
+// Package adaptive provides adaptive decider implementations for cache strategies.
 package adaptive
 
 import "time"

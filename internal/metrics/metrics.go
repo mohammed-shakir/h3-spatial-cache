@@ -1,3 +1,4 @@
+// Package metrics exposes Prometheus metrics for the service.
 package metrics
 
 import (

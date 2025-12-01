@@ -1,3 +1,4 @@
+// Package middleware defines HTTP middlewares for the core server.
 package middleware
 
 import (
@@ -27,7 +28,7 @@ func Logging(l *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// basic panic recovery middleware
+// Recover basic panic recovery middleware
 func Recover() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +44,7 @@ func Recover() func(http.Handler) http.Handler {
 	}
 }
 
-// minimal cors placeholder
+// CORS minimal cors placeholder
 func CORS() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		fn := func(w http.ResponseWriter, r *http.Request) {

@@ -1,9 +1,11 @@
+// Package cache implements the cache-aware query scenario.
 package cache
 
 import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +20,11 @@ import (
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
 	cacheiface "github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/cellindex"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/featurestore"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
+	cachev2 "github.com/mohammed-shakir/h3-spatial-cache/internal/cache/v2"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
@@ -44,6 +49,8 @@ type Engine struct {
 	mapr            *h3mapper.Mapper
 	eng             composer.Engine
 	store           cacheiface.Interface
+	fs              featurestore.FeatureStore
+	idx             cellindex.CellIndex
 	owsURL          *url.URL
 	http            *http.Client
 	exec            executor.Interface
@@ -71,6 +78,7 @@ func newCache(cfg config.Config, logger *slog.Logger, ex executor.Interface) (ro
 	if err != nil {
 		return nil, fmt.Errorf("redis client: %w", err)
 	}
+	v2store := cachev2.NewRedisStore(rc, cfg.CacheTTLDefault)
 	ows := ogc.OWSEndpoint(cfg.GeoServerURL)
 	u, err := url.Parse(ows)
 	if err != nil {
@@ -89,6 +97,9 @@ func newCache(cfg config.Config, logger *slog.Logger, ex executor.Interface) (ro
 		},
 
 		store: newCacheAdapter(rc, cfg.CacheOpTimeout),
+
+		fs:  v2store.Features,
+		idx: v2store.Cells,
 
 		owsURL: u,
 		http:   httpclient.NewOutbound(),
@@ -467,7 +478,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 					return
 				default:
 				}
-				res := e.fetchCell(ctx, q, cell, resToUse)
+				res := e.fetchCell(ctx, q, cell, resToUse, ttl)
 				if res.err == nil && len(res.body) > 0 && writeFill {
 					_ = e.store.Set(res.key, encodeCacheValue(res.body), ttl)
 				}
@@ -636,7 +647,7 @@ func (e *Engine) ttlFor(layer string) time.Duration {
 }
 
 // fetches a single h3 cell from geoserver
-func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int) result {
+func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int, ttl time.Duration) result {
 	key := keys.Key(q.Layer, res, cell, q.Filters)
 
 	cellPolyJSON, err := cellPolygonGeoJSON(cell)
@@ -680,6 +691,129 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 	if err != nil {
 		return result{cell: cell, key: key, err: fmt.Errorf("cell %s read: %w", cell, err)}
 	}
+
+	// Best-effort: populate feature store + cell index (cache v2), but do NOT
+	// fail the request if this processing fails. We always return the raw body.
+	if e.fs != nil && e.idx != nil {
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(body, &root); err != nil {
+			e.logger.Warn("cache v2: parse FeatureCollection root failed",
+				"layer", q.Layer,
+				"res", res,
+				"cell", cell,
+				"err", err,
+			)
+		} else {
+			featuresRaw, ok := root["features"]
+			if !ok {
+				e.logger.Warn("cache v2: FeatureCollection missing features array",
+					"layer", q.Layer,
+					"res", res,
+					"cell", cell,
+				)
+			} else {
+				var feats []json.RawMessage
+				if err := json.Unmarshal(featuresRaw, &feats); err != nil {
+					e.logger.Warn("cache v2: decode features array failed",
+						"layer", q.Layer,
+						"res", res,
+						"cell", cell,
+						"err", err,
+					)
+				} else if len(feats) > 0 {
+					featsMap := make(map[string][]byte, len(feats))
+					ids := make([]string, 0, len(feats))
+
+					for i, fr := range feats {
+						var fobj map[string]json.RawMessage
+						if err := json.Unmarshal(fr, &fobj); err != nil {
+							e.logger.Warn("cache v2: feature parse failed",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+								"idx", i,
+								"err", err,
+							)
+							continue
+						}
+
+						idRaw, hasID := fobj["id"]
+						var normID string
+
+						if hasID && len(bytes.TrimSpace(idRaw)) > 0 {
+							// Canonicalize ID using same logic as aggregator.
+							cid, err := geojsonagg.CanonicalIDKey(idRaw)
+							if err != nil {
+								e.logger.Warn("cache v2: invalid feature id, skipping id-based key",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"idx", i,
+									"err", err,
+								)
+							} else {
+								normID = cid
+							}
+						}
+
+						// Fallback: derive ID from geometry hash if ID is missing/empty.
+						if normID == "" {
+							geomRaw := fobj["geometry"]
+							gh, err := geojsonagg.GeometryHash(geomRaw, geojsonagg.DefaultGeomPrecision)
+							if err != nil {
+								e.logger.Warn("cache v2: geometry hash failed, skipping feature",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"idx", i,
+									"err", err,
+								)
+								continue
+							}
+							normID = gh
+						}
+
+						// Avoid overriding earlier features for the same ID; first wins.
+						if _, exists := featsMap[normID]; !exists {
+							featsMap[normID] = fr
+						}
+						ids = append(ids, normID)
+					}
+
+					if len(featsMap) > 0 && len(ids) > 0 {
+						// Ensure a non-negative TTL; feature store will fall back to its default.
+						t := max(ttl, 0)
+
+						// First write features; if that fails, skip index to avoid dangling refs.
+						if err := e.fs.PutFeatures(ctx, q.Layer, featsMap, t); err != nil {
+							e.logger.Warn("cache v2: feature store put failed",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+								"err", err,
+							)
+						} else if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters), ids, t); err != nil {
+							e.logger.Warn("cache v2: cell index set failed",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+								"err", err,
+							)
+						} else {
+							e.logger.Debug("cache v2 filled cell",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+								"feature_count", len(featsMap),
+								"index_ids", len(ids),
+							)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return result{cell: cell, key: key, body: body, err: nil}
 }
 

@@ -1,3 +1,4 @@
+// Package hotness tracks request hotness and cache temperature metrics.
 package hotness
 
 type Interface interface {

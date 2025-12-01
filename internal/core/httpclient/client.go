@@ -1,3 +1,4 @@
+// Package httpclient configures the HTTP client used to call upstream services.
 package httpclient
 
 import (
@@ -6,7 +7,7 @@ import (
 	"time"
 )
 
-// creates a new outbound http client
+// NewOutbound creates a new outbound http client
 func NewOutbound() *http.Client {
 	transport := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,

@@ -202,7 +202,7 @@ func initCollectors(r prometheus.Registerer) {
 
 func ExposeBuildInfo(_ string) {}
 
-// HTTP request metric
+// ObserveHTTP HTTP request metric
 func ObserveHTTP(method, route string, status int, durationSeconds float64) {
 	if !enabled.Load() || httpRequestsTotal == nil {
 		return

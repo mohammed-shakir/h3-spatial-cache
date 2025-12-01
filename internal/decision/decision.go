@@ -1,3 +1,4 @@
+// Package decision defines interfaces and helpers for caching decisions.
 package decision
 
 type LoadStats struct{}

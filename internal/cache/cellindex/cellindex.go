@@ -1,3 +1,4 @@
+// Package cellindex maintains indexes mapping H3 cells to cached feature identifiers.
 package cellindex
 
 import (

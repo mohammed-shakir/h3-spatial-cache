@@ -1,3 +1,4 @@
+// Package featurestore stores and retrieves feature payloads used by the cache.
 package featurestore
 
 import (

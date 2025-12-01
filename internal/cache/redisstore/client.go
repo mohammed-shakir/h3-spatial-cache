@@ -1,3 +1,4 @@
+// Package redisstore wraps Redis client operations used by the cache.
 package redisstore
 
 import (
@@ -70,7 +71,7 @@ func New(ctx context.Context, addr string, opts ...Option) (*Client, error) {
 	return &Client{rdb: rdb}, nil
 }
 
-// returns a map of found keys to their values
+// MGet returns a map of found keys to their values
 func (c *Client) MGet(ctx context.Context, keys []string) (map[string][]byte, error) {
 	start := time.Now()
 	defer func() { /* metrics recorded in the return below */ }()

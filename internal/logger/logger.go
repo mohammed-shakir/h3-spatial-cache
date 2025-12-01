@@ -1,3 +1,4 @@
+// Package logger configures structured logging for the service.
 package logger
 
 import (
@@ -119,7 +120,7 @@ func Build(cfg Config, out io.Writer) zerolog.Logger {
 	return ctx.Logger()
 }
 
-// returns a child logger with context fields applied
+// FromContext returns a child logger with context fields applied
 func FromContext(ctx context.Context, parent *zerolog.Logger) *zerolog.Logger {
 	var base zerolog.Logger
 	if parent == nil {

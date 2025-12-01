@@ -15,14 +15,16 @@ type Aggregator struct {
 	Prefetch      int
 }
 
+const DefaultGeomPrecision = 7
+
 func NewAdvanced() *Aggregator {
 	return &Aggregator{
 		EnableDedup:   true,
-		GeomPrecision: 7,
+		GeomPrecision: DefaultGeomPrecision,
 	}
 }
 
-// merges the given request's shards into a single GeoJSON FeatureCollection
+// MergeRequest merges the given request's shards into a single GeoJSON FeatureCollection
 func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 	diag := Diagnostics{}
 	if len(req.Shards) == 0 {
@@ -341,7 +343,7 @@ func compareTuples(a, b []cmpValue, keys []SortKey) int {
 	return 0
 }
 
-// merges multiple GeoJSON FeatureCollection parts into a single FeatureCollection
+// Merge merges multiple GeoJSON FeatureCollection parts into a single FeatureCollection
 func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 	req := Request{
 		Query:  Query{},
@@ -410,7 +412,7 @@ func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 func New(dedup bool) *Aggregator {
 	return &Aggregator{
 		EnableDedup:   dedup,
-		GeomPrecision: 7,
+		GeomPrecision: DefaultGeomPrecision,
 	}
 }
 
@@ -434,4 +436,8 @@ func canonicalIDKey(idRaw json.RawMessage) (string, error) {
 	default:
 		return "", fmt.Errorf("id must be string or number (got %T)", v)
 	}
+}
+
+func CanonicalIDKey(idRaw json.RawMessage) (string, error) {
+	return canonicalIDKey(idRaw)
 }

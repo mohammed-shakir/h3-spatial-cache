@@ -1,3 +1,4 @@
+// Package executor coordinates executing upstream HTTP requests and streaming responses.
 package executor
 
 import (
@@ -42,7 +43,7 @@ func New(logger *slog.Logger, client *http.Client, ows string) (*Executor, error
 	}, nil
 }
 
-// proxies a wfs request to GeoServer /ows and streams the response
+// ForwardWFS proxies a wfs request to GeoServer /ows and streams the response
 func (e *Executor) ForwardWFS(_ context.Context, w http.ResponseWriter, r *http.Request, q model.QueryRequest) {
 	params := ogc.BuildGetFeatureParams(q)
 	start := e.startNow()

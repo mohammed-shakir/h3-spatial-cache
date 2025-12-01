@@ -87,7 +87,7 @@ type Negotiation struct {
 	ContentType string
 }
 
-// determines the output format and content type
+// NegotiateFormat determines the output format and content type
 func NegotiateFormat(in NegotiationInput) Negotiation {
 	of := strings.ToLower(strings.TrimSpace(in.OutputFormat))
 	switch {
@@ -204,7 +204,7 @@ type Result struct {
 	HitClass    HitClass
 }
 
-// merges the given shard pages into a single response
+// Compose merges the given shard pages into a single response
 func Compose(ctx context.Context, eng Engine, req Request) (Result, error) {
 	t0 := time.Now()
 	if len(req.Pages) == 0 {
@@ -224,10 +224,6 @@ func Compose(ctx context.Context, eng Engine, req Request) (Result, error) {
 		DefaultFormat: FormatGeoJSON,
 	})
 
-	parts := make([][]byte, 0, len(req.Pages))
-	for _, p := range req.Pages {
-		parts = append(parts, p.Body)
-	}
 	merged, err := eng.merge(ctx, req.Query, req.Pages)
 	if err != nil {
 		return Result{}, fmt.Errorf("aggregate merge: %w", err)
