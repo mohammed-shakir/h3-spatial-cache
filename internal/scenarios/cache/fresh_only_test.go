@@ -355,3 +355,28 @@ func TestServeOnlyIfFresh_GatingAndMetrics(t *testing.T) {
 		}
 	})
 }
+
+func (f *fakeCellIndex) DelCells(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.m == nil {
+		return nil
+	}
+	for _, cell := range cells {
+		k := cellKey{
+			layer: layer,
+			res:   res,
+			cell:  cell,
+			filt:  filters,
+		}
+		delete(f.m, k)
+	}
+	return nil
+}

@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/cellindex"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
@@ -29,31 +30,33 @@ type Mapper interface {
 	CellsForPolygon(poly model.Polygon, res int) (model.Cells, error)
 }
 
+type CellIndex interface {
+	DelCells(ctx context.Context, layer string, res int, cells []string, filters model.Filters) error
+}
+
 type Runner struct {
 	log      *slog.Logger
 	cfg      InvalidationConfig
 	cache    cache.Interface
 	mapper   Mapper
 	resRange []int
-
-	ms  *metricSet
-	ver *versionDedupe
-
+	idx      CellIndex
+	ms       *metricSet
+	ver      *versionDedupe
 	assigned atomic.Bool
 	assignMu sync.RWMutex
 	assign   map[int32]struct{}
-
-	wg     sync.WaitGroup
-	cancel context.CancelFunc
-
-	hot HotnessResetter
+	wg       sync.WaitGroup
+	cancel   context.CancelFunc
+	hot      HotnessResetter
 }
 
 type Options struct {
-	Logger   *slog.Logger
-	Register prometheus.Registerer
-	ResRange []int
-	Hotness  HotnessResetter
+	Logger    *slog.Logger
+	Register  prometheus.Registerer
+	ResRange  []int
+	Hotness   HotnessResetter
+	CellIndex cellindex.CellIndex
 }
 
 func New(cfg InvalidationConfig, c cache.Interface, m Mapper, opts Options) *Runner {
@@ -70,6 +73,7 @@ func New(cfg InvalidationConfig, c cache.Interface, m Mapper, opts Options) *Run
 		ver:      newVersionDedupe(8192),
 		assign:   map[int32]struct{}{},
 		hot:      opts.Hotness,
+		idx:      opts.CellIndex,
 	}
 	if len(r.resRange) == 0 {
 		r.resRange = []int{8}
@@ -238,7 +242,7 @@ func (r *Runner) observe(op string, err error, dur time.Duration) {
 	r.ms.proc.WithLabelValues(op).Observe(dur.Seconds())
 }
 
-func (r *Runner) applyWire(_ context.Context, w WireEvent, _ time.Time) error {
+func (r *Runner) applyWire(ctx context.Context, w WireEvent, _ time.Time) error {
 	var keysToDel []string
 	appliedSet := make(map[string]struct{})
 
@@ -278,10 +282,30 @@ func (r *Runner) applyWire(_ context.Context, w WireEvent, _ time.Time) error {
 	if applied == 0 {
 		return nil
 	}
+
 	if err := r.cache.Del(keysToDel...); err != nil {
 		return fmt.Errorf("redis del (%d keys): %w", len(keysToDel), err)
 	}
 	r.ms.apply.WithLabelValues("delete").Add(float64(applied))
+
+	if r.idx != nil && len(appliedSet) > 0 && w.Layer != "" {
+		cells := make([]string, 0, len(appliedSet))
+		for c := range appliedSet {
+			cells = append(cells, c)
+		}
+
+		for _, rr := range res {
+			if err := r.idx.DelCells(ctx, w.Layer, rr, cells, ""); err != nil {
+				r.log.Warn("cell index delete failed during wire invalidation",
+					"layer", w.Layer,
+					"res", rr,
+					"cells", len(cells),
+					"err", err,
+				)
+			}
+		}
+	}
+
 	if r.hot != nil && len(appliedSet) > 0 {
 		uniq := make([]string, 0, len(appliedSet))
 		for c := range appliedSet {
@@ -292,7 +316,7 @@ func (r *Runner) applyWire(_ context.Context, w WireEvent, _ time.Time) error {
 	return nil
 }
 
-func (r *Runner) applySpatial(_ context.Context, ev invalidation.Event) error {
+func (r *Runner) applySpatial(ctx context.Context, ev invalidation.Event) error {
 	cellRes := 0
 	for _, rr := range r.resRange {
 		if rr > cellRes {
@@ -318,6 +342,7 @@ func (r *Runner) applySpatial(_ context.Context, ev invalidation.Event) error {
 	if len(cells) == 0 {
 		return nil
 	}
+
 	var ks []string
 	for _, rr := range r.resRange {
 		for _, c := range cells {
@@ -328,6 +353,20 @@ func (r *Runner) applySpatial(_ context.Context, ev invalidation.Event) error {
 		return fmt.Errorf("redis del (%d keys): %w", len(ks), err)
 	}
 	r.ms.apply.WithLabelValues("delete").Add(float64(len(ks)))
+
+	if r.idx != nil && ev.Layer != "" {
+		for _, rr := range r.resRange {
+			if err := r.idx.DelCells(ctx, ev.Layer, rr, []string(cells), ""); err != nil {
+				r.log.Warn("cell index delete failed during spatial invalidation",
+					"layer", ev.Layer,
+					"res", rr,
+					"cells", len(cells),
+					"err", err,
+				)
+			}
+		}
+	}
+
 	if r.hot != nil {
 		r.hot.Reset(cells...)
 	}

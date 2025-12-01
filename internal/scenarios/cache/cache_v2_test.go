@@ -55,6 +55,14 @@ func (r *recordingFeatureStore) PutFeatures(
 type recordingCellIndex struct {
 	mu    sync.Mutex
 	calls []recordingIdxCall
+	dels  []recordingDelIdxCall
+}
+
+type recordingDelIdxCall struct {
+	layer   string
+	res     int
+	cells   []string
+	filters model.Filters
 }
 
 type recordingIdxCall struct {
@@ -100,6 +108,26 @@ func (r *recordingCellIndex) SetIDs(
 	return nil
 }
 
+func (r *recordingCellIndex) DelCells(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	cp := append([]string(nil), cells...)
+	r.dels = append(r.dels, recordingDelIdxCall{
+		layer:   layer,
+		res:     res,
+		cells:   cp,
+		filters: filters,
+	})
+	return nil
+}
+
 func newTestEngineForV2(t *testing.T, body string, fs *recordingFeatureStore, idx *recordingCellIndex) *Engine {
 	t.Helper()
 
@@ -117,15 +145,14 @@ func newTestEngineForV2(t *testing.T, body string, fs *recordingFeatureStore, id
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	return &Engine{
-		logger: logger,
-		res:    7,
-		minRes: 7,
-		maxRes: 7,
-		fs:     fs,
-		idx:    idx,
-		owsURL: u,
-		http:   srv.Client(),
-		// opTimeout used for upstream calls
+		logger:    logger,
+		res:       7,
+		minRes:    7,
+		maxRes:    7,
+		fs:        fs,
+		idx:       idx,
+		owsURL:    u,
+		http:      srv.Client(),
 		opTimeout: 2 * time.Second,
 	}
 }
@@ -223,7 +250,6 @@ func TestFetchCell_PopulatesFeatureStoreAndIndex_FallbackGeometryHash(t *testing
 		t.Fatalf("expected 1 SetIDs call, got %d", len(idx.calls))
 	}
 
-	// Compute expected geometry hash with same precision.
 	expectedID, err := geojsonagg.GeometryHash([]byte(geom), geojsonagg.DefaultGeomPrecision)
 	if err != nil {
 		t.Fatalf("GeometryHash: %v", err)
@@ -284,7 +310,6 @@ func TestFetchCell_MultiResolution_SafeReuseOfFeatures(t *testing.T) {
 		t.Fatalf("fetchCell fine err: %v", r2.err)
 	}
 
-	// We should have written to feature store twice, but with the same IDs.
 	if len(fs.calls) != 2 {
 		t.Fatalf("expected 2 PutFeatures calls (coarse+fine), got %d", len(fs.calls))
 	}
@@ -295,7 +320,6 @@ func TestFetchCell_MultiResolution_SafeReuseOfFeatures(t *testing.T) {
 		t.Fatalf("feature IDs differ between resolutions; coarse=%v fine=%v", firstIDs, secondIDs)
 	}
 
-	// Cell index entries must differ by resolution, but both contain the same IDs.
 	if len(idx.calls) != 2 {
 		t.Fatalf("expected 2 SetIDs calls, got %d", len(idx.calls))
 	}

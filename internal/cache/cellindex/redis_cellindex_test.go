@@ -214,3 +214,51 @@ func TestRedisCellIndex_ClearOneResolutionKeepsOther(t *testing.T) {
 		t.Fatalf("expected res=8 ids unaffected, got %v", ids8)
 	}
 }
+
+func TestRedisCellIndex_DelCells_RemovesEntries(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+
+	rc, err := redisstore.New(ctx, mr.Addr())
+	if err != nil {
+		t.Fatalf("redisstore.New: %v", err)
+	}
+
+	idx := NewRedisIndex(rc)
+
+	layer := "demo:layer"
+	res := 8
+	cell := "892a100d2b3ffff"
+	filters := model.Filters("status='active'")
+
+	seedIDs := []string{"s:foo", "n:42"}
+	if err := idx.SetIDs(ctx, layer, res, cell, filters, seedIDs, time.Minute); err != nil {
+		t.Fatalf("SetIDs: %v", err)
+	}
+
+	got, err := idx.GetIDs(ctx, layer, res, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs before DelCells: %v", err)
+	}
+	if len(got) != len(seedIDs) {
+		t.Fatalf("GetIDs len before DelCells=%d, want=%d", len(got), len(seedIDs))
+	}
+
+	if err := idx.DelCells(ctx, layer, res, []string{cell}, filters); err != nil {
+		t.Fatalf("DelCells: %v", err)
+	}
+
+	got2, err := idx.GetIDs(ctx, layer, res, cell, filters)
+	if err != nil {
+		t.Fatalf("GetIDs after DelCells: %v", err)
+	}
+	if len(got2) != 0 {
+		t.Fatalf("GetIDs after DelCells = %v (len=%d), want nil/empty", got2, len(got2))
+	}
+}

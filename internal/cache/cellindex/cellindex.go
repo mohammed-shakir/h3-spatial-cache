@@ -16,6 +16,8 @@ type CellIndex interface {
 	GetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters) ([]string, error)
 
 	SetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters, ids []string, ttl time.Duration) error
+
+	DelCells(ctx context.Context, layer string, res int, cells []string, filters model.Filters) error
 }
 
 type redisCellIndex struct {
@@ -86,6 +88,28 @@ func (ci *redisCellIndex) SetIDs(
 
 	if err := ci.cli.Set(ctx, key, payload, ttl); err != nil {
 		return fmt.Errorf("cellindex redis SET %q: %w", key, err)
+	}
+	return nil
+}
+
+func (ci *redisCellIndex) DelCells(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) error {
+	if len(cells) == 0 {
+		return nil
+	}
+
+	keysToDel := make([]string, 0, len(cells))
+	for _, cell := range cells {
+		keysToDel = append(keysToDel, keys.CellIndexKey(layer, res, cell, filters))
+	}
+
+	if err := ci.cli.Del(ctx, keysToDel...); err != nil {
+		return fmt.Errorf("cellindex redis DEL %d keys: %w", len(keysToDel), err)
 	}
 	return nil
 }

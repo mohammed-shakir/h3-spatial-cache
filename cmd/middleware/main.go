@@ -16,6 +16,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/cellindex"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
@@ -192,6 +193,7 @@ func run() int {
 	var readinessReporter health.ReadinessReporter
 	if strings.ToLower(cfg.Invalidation.Driver) == "kafka" && cfg.Invalidation.Enabled {
 		rcli, err := redisstore.New(ctx, cfg.RedisAddr)
+		idx := cellindex.NewRedisIndex(rcli)
 		if err != nil {
 			appLog.Error("invalidation: redis connect failed", "err", err)
 		} else {
@@ -216,6 +218,7 @@ func run() int {
 					}
 					return nil
 				}(),
+				CellIndex: idx,
 			})
 
 			go func() {
