@@ -6,7 +6,8 @@ but the difference is how they get the data and what logic they apply.
 There are 2 scenarios implemented for this middleware:
 
 - `baseline`: no cache, just pass-through, but with tracking.
-- `cache`: uses redis + hotness + adaptive decisions.
+- `cache`: uses a Redis-backed **feature-centric cache** (feature store + cell index)
+  plus hotness and adaptive decisions.
 - Then "sub-scenarios"/modes layered on top of `cache`:
   - Full cache hit
   - Partial cache hit
@@ -58,35 +59,33 @@ Client -> Middleware (tracking) -> GeoServer -> PostGIS -> Client
 
 1. **Client sends `/query`**
 
-    Example:
+   Example:
 
-    ```bash
-    curl -s 'http://localhost:8090/query?layer=demo:NR_polygon&bbox=17.98,59.32,18.01,59.34,EPSG:4326'
-    ```
+   ```bash
+   curl -s 'http://localhost:8090/query?layer=demo:NR_polygon&bbox=17.98,59.32,18.01,59.34,EPSG:4326'
+   ```
 
 2. **Router validates input**
 
-    Checks that the `layer` exists, either `bbox` or `polygon` is present and has
-    valid format, and normalizes the input, so maybe trims spaces,
-    uppercases SRID like `EPSG:4326`, etc.
+   Checks that the `layer` exists, either `bbox` or `polygon` is present and has
+   valid format, and normalizes the input, so maybe trims spaces,
+   uppercases SRID like `EPSG:4326`, etc.
 
 3. **Baseline engine runs**
 
-    It calculates which H3 cells the query area touches. This is done only for
-    logging, so it doesn’t store or reuse results, it just records "this query
-    touched cells A, B, C...". Each cell gets its hotness score updated using
-    exponential decay, where new queries bump the score up and old scores decay
-    over time so hotspots cool down if not used. But in baseline, hotness is only
-    recorded and not used for caching.
+   It calculates which H3 cells the query area touches. This is done only for
+   logging, so it doesn’t store or reuse results, it just records "this query
+   touched cells A, B, C...". Each cell gets its hotness score updated using
+   exponential decay, where new queries bump the score up and old scores decay
+   over time so hotspots cool down if not used. But in baseline, hotness is only
+   recorded and not used for caching.
 
 4. **Executor calls GeoServer**
-
-    - Converts the query (layer + bbox/polygon) into a GeoServer WFS request.
-    - GeoServer forwards that to PostGIS.
-    - GeoServer returns GeoJSON/GML back to the middleware.
+   - Converts the query (layer + bbox/polygon) into a GeoServer WFS request.
+   - GeoServer forwards that to PostGIS.
+   - GeoServer returns GeoJSON/GML back to the middleware.
 
 5. **Composer wraps the result**
-
    - Ensures the response is a valid **FeatureCollection** with consistent structure.
    - This makes sure baseline and cache scenarios return the same shape.
 
@@ -106,20 +105,19 @@ Client -> Middleware (tracking) -> GeoServer -> PostGIS -> Client
   ```bash
   # BBOX request
   curl -s 'http://localhost:8090/query?layer=demo:NR_polygon&bbox=17.98,59.32,18.01,59.34,EPSG:4326'
-  
+
   # Polygon request
   curl -G "http://localhost:8090/query" \
     --data-urlencode 'layer=demo:NR_polygon' \
     --data-urlencode 'polygon={"type":"Polygon","coordinates":[[[17.98,59.32],[18.01,59.32],[18.01,59.34],[17.98,59.34],[17.98,59.32]]]}'
   ```
 
-After sending a request, you can check the middleware logs. It will show 3 things:
+After sending a request, you can check the middleware logs. It will show:
 
-- **Incoming HTTP request**: So it confirms that the middleware received a
-  /query request.
-- **H3 mapping**: Shows the request footprint (bbox/polygon) converted to H3 cells.
-- **Cache decision**: In baseline, it will never cache, but it will still print
-  the result of the hotness-based decision engine
+- **Incoming HTTP request**: confirms that the middleware received a `/query` request.
+- **H3 mapping**: shows the request footprint (bbox/polygon) converted to H3 cells.
+- **Hotness updates**: shows how hotness scores are updated for cells (for
+  analysis only; baseline still never uses cache).
 
 ## 2. Cache scenario
 
@@ -132,68 +130,74 @@ So for a full hit, every hex cell needed should already be in Redis.
 **Pipeline**:
 
 ```bash
-Client -> Middleware -> Redis -> Client
+Client -> Middleware -> Redis (feature store + cell index) -> Client
 ```
 
 #### Step by step for full cache hit
 
 1. **Same initial steps**
-
-    - `/query` → router validates → cache scenario chosen.
+   - `/query` → router validates → cache scenario chosen.
 
 2. **Map query footprint → H3 cells**
+   - The engine figures out which H3 cells cover the requested geometry.
+   - Uses a base resolution, possibly adjusted by the adaptive decider within
+     the configured `[H3ResMin, H3ResMax]` range.
 
-    - The engine figures out which H3 cells cover the requested geometry.
-    - Uses the chosen resolution (e.g. res 7/8/9).
+3. **Lookup in the cell index**
+   - For all cells, it calls the cell index (backed by Redis) to get the list of
+     feature IDs per `(layer, res, cell, filters)`.
+   - Cells are split into:
+     - **Index hits**: have IDs (or the explicit “empty” marker).
+     - **Index misses**: have no entry yet.
 
-3. **Build Redis keys**
+4. **Fetch feature payloads from the feature store**
+   - From all index hits, it collects the **unique feature IDs** and calls the
+     feature store (also Redis-backed) to fetch the GeoJSON feature payloads in
+     one batched read.
 
-    - For each cell, it builds a key like:
+5. **Assemble cached shard pages**
+   - For each cell with IDs:
+     - Rebuilds the list of feature JSON objects.
+     - Tracks geometry hashes when IDs are hash-based.
+     - Builds a shard page:
+       - `CacheStatus = CacheHit`
+       - `Features = []json.RawMessage`
+       - `GeomHashes = []string` (optional, for dedup).
+   - If **all cells** are covered by the feature store (no index misses), this
+     is a full feature-centric hit.
 
-      ```text
-      demo:NR_polygon:res7:<h3cell>:filters=<normalized>:f=<hash>
-      ```
+6. **Freshness check (optional)**
+   - If “serve only if fresh” is enabled and there has been an invalidation for
+     this layer since the cache was populated, the engine may return HTTP 412
+     instead of serving from cache.
+   - Otherwise, cached data is considered acceptable and used directly.
 
-    - The hash ensures that if filters change,
-    we don’t accidentally reuse a wrong page.
-
-4. **Do a batch read (MGET) from Redis**
-
-    - We do a single MGET call to get all the keys (so all needed h3 cells to
-    cover the query area).
-
-5. **Check freshness**
-
-    For each value, it has a header: `SC1 + [timestamp] + payload (GeoJSON data)`
-    (SCI is just a label, and it stands for "spatial cache 1").
-    Middleware compares that timestamp with the latest Kafka invalidation timestamp
-    for that layer/region: if a cache entry is older than the invalidation, it is
-    considered stale. A full hit requires all cells present and fresh.
-
-6. **If full hit: compose directly**
-
-    The composer just stitches together the cached "pages" (each cell's GeoJSON),
-    and there is no call to GeoServer at all.
-
-7. **Return response**
+7. **Compose and return**
+   - The composer calls the advanced GeoJSON aggregator with the cached shards.
+   - The aggregator merges features, applies global sort/limit/offset, and
+     deduplicates by feature ID or geometry hash.
+   - Response is returned to the client without any GeoServer/PostGIS calls.
 
 #### How to test the full cache hit
 
 Warm the region first, so it needs to be hit several times
 (you can run the load generator). Then check Redis (install a tool like `valkey-cli`):
 
-  ```bash
-  valkey-cli --scan --pattern 'demo:NR_polygon*'
-  ```
+```bash
+valkey-cli --scan
+```
 
-You should see cached keys for the H3 cells.
+You should see:
+
+- `idx:` keys for the H3 cells (cell index),
+- `feat:` keys for individual features in those cells.
 
 You can also check metrics for cache hits:
 
-  ```bash
-  curl -s http://localhost:8090/metrics | grep spatial_cache_hits_total
-  curl -s http://localhost:8090/metrics | grep 'hit_class="full_hit"'
-  ```
+```bash
+curl -s http://localhost:8090/metrics | grep spatial_cache_hits_total
+curl -s http://localhost:8090/metrics | grep 'hit_class="full_hit"'
+```
 
 ### 2.2 Partial cache hit (realistic case)
 
@@ -204,37 +208,55 @@ the workload “moves” a bit, or you have large bboxes.
 **Pipeline**:
 
 ```bash
-Client -> Middleware -> Redis + GeoServer/PostGIS -> Redis -> Client
+Client
+-> Middleware (cache)
+-> Redis (feature store + cell index) + GeoServer/PostGIS for misses
+-> Redis (feature/index fill)
+-> Client
 ```
 
 #### Step by step for partial cache hit
 
 1. **Same initial steps**
-    - `/query` → router → cache scenario → map to H3 cells.
+   - `/query` → router → cache scenario → map to H3 cells (possibly at an
+     adaptive resolution).
 
-2. **Build Redis keys**
+2. **Read from cell index**
+   - The engine queries the cell index for all cells.
+   - Cells are split into:
+     - **Hit group**: cells with IDs (or an explicit empty marker).
+     - **Miss group**: cells with no index entry.
 
-3. **Split cells into two groups**
+3. **Fetch features for hit cells**
+   - For IDs belonging to hit cells, it calls the feature store once to get all
+     unique features.
+   - Builds shard pages (`CacheStatus = CacheHit`) for cells that can be fully
+     reconstructed from the feature store.
 
-    - **Hit group**: cells with fresh entries in Redis.
-    - **Miss group**: cells that are missing or stale.
+4. **Freshness enforcement**
+   - If “serve only if fresh” is enabled and:
+     - any cells are missing, or
+     - the layer has been invalidated since cache population,
+       the engine returns HTTP 412 and does **not** call GeoServer.
 
-4. **Fetch only the missing cells from GeoServer**
-
-    - It issues GeoServer requests per missing cell (or per chunk).
-    - Results come back as GeoJSON.
-
-5. **Write newly fetched cells into Redis**
-
-    - Each new cell is stored with:
-      - SC1 header timestamp.
-      - A TTL chosen by the TTL rules (baseline or adaptive).
+5. **Fetch only the missing cells from GeoServer**
+   - For cells in the **miss group**, it issues per-cell WFS requests to
+     GeoServer.
+   - Each cell response is parsed:
+     - individual features are written to the feature store,
+     - the list of normalized IDs is written to the cell index.
+   - The raw per-cell FeatureCollections are kept as “miss shard pages”
+     (`CacheStatus = CacheMiss`) for this request.
 
 6. **Composer merges both sources**
-
-   - Cached + freshly fetched data are merged into the final FeatureCollection.
+   - Cached pages (feature-based) and freshly fetched pages (body-based) are
+     all passed to the aggregator.
+   - The aggregator merges them into a single FeatureCollection, with global
+     sort/limit/offset and deduplication.
 
 7. **Return response**
+   - Client sees a single FeatureCollection; internally we have partially
+     served from cache and partially from GeoServer.
 
 #### How to test the partial cache hit
 
@@ -250,9 +272,9 @@ cache. So we fetch everything from GeoServer and then optionally cache the resul
 
 Two main causes:
 
-  1. **Cold start**: First-ever query for that area/resolution/filter.
-  2. **Bypass decision**: Adaptive logic decides “don’t cache this” (e.g.,
-  too cold, not worth memory or risk of staleness).
+1. **Cold start**: First-ever query for that area/resolution/filter.
+2. **Bypass decision**: Adaptive logic decides “don’t cache this” (e.g.,
+   too cold, not worth memory or risk of staleness).
 
 **Pipeline**:
 
@@ -263,17 +285,38 @@ Client -> Middleware -> GeoServer/PostGIS -> Redis -> Client
 #### Step by step for cache miss
 
 1. **Same initial steps**
-    - `/query` → router → cache scenario → map H3 cells → build keys.
+   - `/query` → router → cache scenario → map H3 cells.
 
-2. **Check Redis (MGET)**
-    - `MGET` returns **nothing** (or all stale) → all cells are misses.
+2. **Check feature-centric cache**
+   - Cell index query returns no IDs for any cells (cold start), or the
+     feature store cannot supply required features.
+   - Effectively, all cells are misses from the feature-centric perspective.
 
-3. **Decider check**:
+3. **Adaptive decision**
+   - The decider returns either:
+     - `DecisionBypass`: do not use cache for this request, or
+     - `DecisionFill`: fetch data and populate cache.
 
-    If `DecisionBypass` and “serve only if fresh” is enabled, it might return HTTP
-    412 (Precondition Failed) to the client to indicate that it cannot safely serve
-    stale data. Otherwise, it calls GeoServer to fetch all data, stores each
-    cell in Redis, and returns a normal 200 response.
+4. **Bypass path**
+   - For `DecisionBypass`, the engine:
+     - calls the executor once with the original query,
+     - does **not** update feature store or cell index,
+     - passes the result to composer and returns it to the client.
+
+5. **Fill path**
+   - For `DecisionFill`, the engine:
+     - treats all cells as “missing”,
+     - runs the same per-cell fill logic as in the partial-hit path:
+       - `fetchCell` → GeoServer per cell,
+       - parse features,
+       - write to feature store and cell index with the chosen TTL,
+       - use per-cell bodies as miss shard pages for this request.
+
+6. **Compose & return**
+   - All shard pages for this request are passed to the aggregator and returned
+     as a single FeatureCollection.
+   - On the next query for the same region, the feature-centric cache can be
+     used.
 
 #### How to test the cache miss
 
@@ -306,7 +349,10 @@ Example event gets sent into Kafka:
   "layer": "demo:NR_polygon",
   "ts": "2024-01-01T00:00:00Z",
   "bbox": {
-    "x1": 11, "y1": 55, "x2": 12, "y2": 56,
+    "x1": 11,
+    "y1": 55,
+    "x2": 12,
+    "y2": 56,
     "srid": "EPSG:4326"
   }
 }
@@ -320,34 +366,37 @@ Example event gets sent into Kafka:
 #### Step by step for Kafka invalidation
 
 1. **Event consumption**
-
-    - Consumer receives a JSON event, it can be:
-      - **WireEvent with explicit keys**: Event already knows exact cache keys.
-      - **Spatial event**: Event has geometry/bbox; middleware has
-      to re-map it to H3.
+   - Consumer receives a JSON event, it can be:
+     - **WireEvent with explicit keys**: Event already knows exact cache keys.
+     - **Spatial event**: Event has geometry/bbox; middleware has
+       to re-map it to H3.
 
 2. **Determine affected H3 cells**
 
-    For spatial events, map the bbox or polygon to H3 cells and build the cache key
-    prefixes for those cells.
+   For spatial events, map the bbox or polygon to H3 cells and build the cache key
+   prefixes for those cells.
 
-3. **Delete Redis keys**
+3. **Delete Redis keys (cache + index)**
 
-    For each affected cell, run `DEL` to remove cache entries. Reset hotness for
-    those cells so they don’t look artificially hot.
+   For each affected cell and each configured resolution:
+   - build the base cache key using the standard `<layer:res:cell:filters...>` format,
+   - delete any corresponding **cell cache entries**,
+   - delete any corresponding **cell index entries** (`idx:` keys).
+     Hotness for those cells is reset so they no longer appear hot after data changes.
 
 4. **Update "invalidated-at" timestamps**
 
-    Internally, it keeps track of the latest invalidation time per layer or region.
-    The pattern is that a cache entry has a timestamp in its SC1 header, while the
-    middleware knows the last invalidation time for each layer. If the cache
-    timestamp is earlier than the last invalidation time, the entry is considered
-    stale.
+   Internally, it keeps track of the latest invalidation time per layer. The
+   feature store itself does not carry per-entry timestamps; instead, the cache
+   engine uses the layer’s “invalidated-at” timestamp together with Redis TTLs
+   to decide whether it is safe to serve from cache when “serve only if fresh”
+   is enabled.
 
 5. **Next time a query hits that area**
 
-    Even if a key survived, it’s treated as stale and refetched.
-    Fresh result is cached with a new timestamp and TTL.
+   Even if some Redis entries survive, they may be treated as stale depending on
+   the layer’s invalidation time and freshness settings. Fresh results are fetched
+   and cached again with new TTLs as needed.
 
 #### How to test Kafka invalidation
 
@@ -369,21 +418,22 @@ others are 'cold'. We’d like to cache **hot** regions more aggressively
 #### Key concepts
 
 - **Hotness per H3 cell**
-
   - Every time a cell is touched by a query, its hotness counter is increased.
   - Hotness decays over time: if there are no new queries, score drops.
   - This captures “recent popularity”, not just total hits.
 
 - **Threshold and half-life**
-
   - `HOT_THRESHOLD`: if hotness > threshold ⇒ treat cell as hot.
   - `HOT_HALF_LIFE`: how fast scores decay (e.g. 1 minute).
 
 - **Adaptive decisions**
-
   - The decider sees hotness and chooses:
-    - Which **H3 resolution** to use.
-    - Which **TTL tier** to apply for that cell (short/medium/long).
+    - Which **H3 resolution** to use for this query.
+    - Which **TTL tier** to apply (e.g. cold/warm/hot).
+    - Whether to:
+      - **fill** the cache,
+      - **bypass** it, or
+      - **serve only if fresh** (fail with 412 if freshness cannot be guaranteed).
   - In **dry-run mode**, it logs decisions but doesn’t actually change behavior.
   - In **live mode**, it changes mapping & TTLs for real.
 
@@ -392,15 +442,19 @@ others are 'cold'. We’d like to cache **hot** regions more aggressively
 1. Query comes in, and H3 cells are computed.
 
 2. For each cell:
-    - Update exp-decay hotness.
-    - The decider checks the new score.
+   - Update exp-decay hotness.
+   - The decider checks the new score.
 
 3. Decider chooses:
-    - Keep same resolution or switch to a different one.
-    - Cache or bypass.
-    - TTL length (e.g. 30s vs 5min).
+   - Keep same resolution or switch to a different one.
+   - Cache behaviour:
+     - `fill` (use cache + possibly write),
+     - `bypass` (go straight to GeoServer),
+     - `serve_only_if_fresh` (serve from cache only if it is fresh; else 412).
+   - TTL length (e.g. cold vs warm vs hot tier).
 
-4. Cache keys and TTLs are chosen according to these decisions.
+4. Cache keys and TTLs are chosen according to these decisions, and both the
+   feature store and cell index entries use the selected TTL when written.
 
 5. Cache and metrics reflect these choices.
 
@@ -408,6 +462,7 @@ others are 'cold'. We’d like to cache **hot** regions more aggressively
 
 - Run a highly skewed workload (Zipf).
 - Watch:
-  - `adaptive_decisions_total` increasing.
-  - Number of “hot keys” rising for hot areas.
-  - TTLs for hot regions becoming longer (`redis-cli TTL <key>`).
+  - `adaptive_decisions_total` increasing, broken down by `decision` and `reason`.
+  - Hotness metrics to confirm that a small set of cells dominate the traffic.
+  - TTLs for hot regions becoming longer (`valkey-cli TTL <key>`) compared to
+    cold regions.

@@ -101,23 +101,23 @@ func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 					}
 					seenID[key] = struct{}{}
 				}
-			} else {
-				if fp.geomHash == "" {
-					gh, err := GeometryHash(fp.geomRaw, a.GeomPrecision)
-					if err != nil {
-						return nil, diag, fmt.Errorf("geom hash: %w", err)
-					}
-					fp.geomHash = gh
-				}
-				if _, ok := seenGH[fp.geomHash]; ok {
-					diag.DedupByGH++
-					if f, ok := fp.iter.next(); ok {
-						heap.Push(h, f)
-					}
-					continue
-				}
-				seenGH[fp.geomHash] = struct{}{}
 			}
+
+			if fp.geomHash == "" {
+				gh, err := GeometryHash(fp.geomRaw, a.GeomPrecision)
+				if err != nil {
+					return nil, diag, fmt.Errorf("geom hash: %w", err)
+				}
+				fp.geomHash = gh
+			}
+			if _, ok := seenGH[fp.geomHash]; ok {
+				diag.DedupByGH++
+				if f, ok := fp.iter.next(); ok {
+					heap.Push(h, f)
+				}
+				continue
+			}
+			seenGH[fp.geomHash] = struct{}{}
 		}
 
 		switch {
