@@ -36,6 +36,7 @@ const (
 type ShardPage struct {
 	Body        []byte
 	CacheStatus CacheStatus
+	Features    []json.RawMessage
 }
 
 type HitClass string

@@ -456,31 +456,21 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			if len(ids) == 0 {
 				continue
 			}
-			cellFeats := make([][]byte, 0, len(ids))
+
+			feats := make([]json.RawMessage, 0, len(ids))
 			for _, id := range ids {
 				if f, ok := featsByID[id]; ok {
-					cellFeats = append(cellFeats, f)
+					feats = append(feats, json.RawMessage(f))
 				}
 			}
-			if len(cellFeats) == 0 {
-				missingCells = append(missingCells, cell)
-				continue
-			}
 
-			body, err := composer.BuildFeatureCollectionShard(cellFeats)
-			if err != nil {
-				e.logger.Warn("build FeatureCollection shard from feature store failed, treating cell as miss",
-					"layer", q.Layer,
-					"res", resToUse,
-					"cell", cell,
-					"err", err,
-				)
+			if len(feats) == 0 {
 				missingCells = append(missingCells, cell)
 				continue
 			}
 
 			pages = append(pages, composer.ShardPage{
-				Body:        body,
+				Features:    feats,
 				CacheStatus: composer.CacheHit,
 			})
 		}

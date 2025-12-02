@@ -35,23 +35,34 @@ func (a *GeoJSONV2Adapter) MergeWithQuery(
 	}
 
 	for i, page := range pages {
-		if len(page.Body) == 0 {
-			continue
+		var feats []json.RawMessage
+
+		if page.Features != nil {
+			feats = page.Features
+		} else {
+			if len(page.Body) == 0 {
+				continue
+			}
+
+			var root fcRoot
+			if err := json.Unmarshal(page.Body, &root); err != nil {
+				return nil, fmt.Errorf("part %d: parse json: %w", i, err)
+			}
+			if root.Features == nil {
+				return nil, fmt.Errorf(`part %d: missing required member "features"`, i)
+			}
+			feats = root.Features
 		}
 
-		var root fcRoot
-		if err := json.Unmarshal(page.Body, &root); err != nil {
-			return nil, fmt.Errorf("part %d: parse json: %w", i, err)
-		}
-		if root.Features == nil {
-			return nil, fmt.Errorf(`part %d: missing required member "features"`, i)
+		if len(feats) == 0 {
+			continue
 		}
 
 		fromCache := page.CacheStatus == CacheHit
 
 		req.Shards = append(req.Shards, geojsonagg.ShardPage{
 			Meta:     geojsonagg.ShardMeta{FromCache: fromCache, ID: fmt.Sprintf("part-%d", i)},
-			Features: root.Features,
+			Features: feats,
 		})
 	}
 
