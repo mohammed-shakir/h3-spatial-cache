@@ -47,11 +47,14 @@ func (s *redisFeatureStore) MGetFeatures(
 	if err != nil {
 		return nil, fmt.Errorf("featurestore redis MGET %d keys: %w", len(keys), err)
 	}
+	if len(raw) == 0 {
+		return map[string][]byte{}, nil
+	}
 
 	out := make(map[string][]byte, len(raw))
+
 	for i, id := range ids {
-		k := keys[i]
-		if v, ok := raw[k]; ok {
+		if v, ok := raw[keys[i]]; ok {
 			out[id] = v
 		}
 	}

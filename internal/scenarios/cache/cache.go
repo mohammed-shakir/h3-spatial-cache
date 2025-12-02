@@ -212,7 +212,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// map footprint to cells at base resolution
 	cells, err := e.cellsForRes(q, e.res)
 	if err != nil {
 		e.logger.Error("h3 mapping failed", "err", err)
@@ -237,7 +236,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// hotness hooks (cheap, sharded)
 	if e.adaptiveEnabled && e.hot != nil {
 		for _, c := range cells {
 			e.hot.Inc(c)
@@ -245,10 +243,10 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		}
 	}
 
-	// decision
 	dec := adaptive.Decision{Type: adaptive.DecisionFill, Resolution: e.res, TTL: e.ttlFor(q.Layer)}
 	reason := adaptive.ReasonDefaultFill
 	applyDecision := e.adaptiveEnabled && !e.adaptiveDryRun && e.decider != nil
+
 	if e.adaptiveEnabled && e.decider != nil {
 		decideStart := time.Now()
 		d, r := e.decider.Decide(adaptive.Query{
@@ -274,7 +272,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		)
 	}
 
-	// apply resolution and TTL based on decision
 	resToUse := e.res
 	if applyDecision {
 		resToUse = dec.Resolution
@@ -284,7 +281,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		ttl = dec.TTL
 	}
 
-	// remap cells if resolution changed
 	if resToUse != e.res {
 		cells, err = e.cellsForRes(q, resToUse)
 		if err != nil {
@@ -342,7 +338,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		w.WriteHeader(res.StatusCode)
 		_, _ = w.Write(res.Body)
 
-		// treat as a miss (no cache involvement) and not stale
 		observability.ObserveSpatialRead("miss", false)
 
 		e.logger.Info("cache bypass",
@@ -368,7 +363,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	)
 
 	if e.idx == nil || e.fs == nil {
-		missing = append([]string(nil), cells...)
+		missing = append(missing, cells...)
 
 		if serveOnlyIfFresh && len(missing) > 0 {
 			observability.IncFreshReject("miss")
@@ -382,8 +377,8 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		cellsWithIndexHit := make([]string, 0, len(cells))
 		missingCells := make([]string, 0, len(cells))
 
-		allIDsSet := make(map[string]struct{})
-		allIDs = nil
+		allIDsSet := make(map[string]struct{}, len(cells)*4)
+		allIDs = allIDs[:0]
 
 		for _, cell := range cells {
 			ids, err := e.idx.GetIDs(ctx, q.Layer, resToUse, cell, model.Filters(q.Filters))
@@ -417,7 +412,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			}
 		}
 
-		featsByID := map[string][]byte{}
+		featsByID := make(map[string][]byte, len(allIDs))
 		var featsFound, featsMissing int
 
 		if len(allIDs) > 0 {
@@ -431,7 +426,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 				)
 				missingCells = append(missingCells, cellsWithIndexHit...)
 				indexMissCount += len(cellsWithIndexHit)
-				cellsWithIndexHit = nil
+				cellsWithIndexHit = cellsWithIndexHit[:0]
 			} else {
 				featsByID = m
 				for _, id := range allIDs {
@@ -450,12 +445,20 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 		for _, cell := range cellsWithIndexHit {
 			ids := cellToIDs[cell]
+			if len(ids) == 0 {
+				continue
+			}
 			cellFeats := make([][]byte, 0, len(ids))
 			for _, id := range ids {
 				if f, ok := featsByID[id]; ok {
 					cellFeats = append(cellFeats, f)
 				}
 			}
+			if len(cellFeats) == 0 {
+				missingCells = append(missingCells, cell)
+				continue
+			}
+
 			body, err := composer.BuildFeatureCollectionShard(cellFeats)
 			if err != nil {
 				e.logger.Warn("build FeatureCollection shard from feature store failed, treating cell as miss",
@@ -467,13 +470,14 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 				missingCells = append(missingCells, cell)
 				continue
 			}
+
 			pages = append(pages, composer.ShardPage{
 				Body:        body,
 				CacheStatus: composer.CacheHit,
 			})
 		}
 
-		var staleAny bool
+		staleAny := false
 		lastInv := observability.GetLayerInvalidatedAtUnix(q.Layer)
 		if lastInv > 0 && len(pages) > 0 {
 			staleAny = true
@@ -550,6 +554,11 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	fillStart := time.Now()
+
+	if len(missing) == 0 {
+		missing = nil
+	}
+
 	jobs := make(chan string, e.queueSize)
 	results := make(chan result, len(missing))
 
@@ -593,12 +602,14 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	wg.Wait()
 	close(results)
 
-	var fetched [][]byte
+	fetched := make([][]byte, 0, len(missing))
 	var errs []error
 	for rres := range results {
 		if rres.err != nil {
 			errs = append(errs, rres.err)
-		} else if len(rres.body) > 0 {
+			continue
+		}
+		if len(rres.body) > 0 {
 			fetched = append(fetched, rres.body)
 		}
 	}
@@ -610,7 +621,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	if len(errs) > 0 {
-		msg := strings.Builder{}
+		var msg strings.Builder
 		msg.WriteString("one or more upstream errors (")
 		msg.WriteString(fmt.Sprintf("%d/%d cells failed): ", len(errs), len(missing)))
 		for i, ferr := range errs {
@@ -720,7 +731,6 @@ func (e *Engine) ttlFor(layer string) time.Duration {
 	return e.ttlDefault
 }
 
-// fetches a single h3 cell from geoserver
 func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int, ttl time.Duration) result {
 	key := keys.Key(q.Layer, res, cell, q.Filters)
 

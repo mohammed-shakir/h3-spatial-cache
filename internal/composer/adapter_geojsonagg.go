@@ -16,7 +16,11 @@ func NewGeoJSONV2Adapter(agg *geojsonagg.Aggregator) *GeoJSONV2Adapter {
 	return &GeoJSONV2Adapter{Agg: agg}
 }
 
-func (a *GeoJSONV2Adapter) MergeWithQuery(_ context.Context, q QueryParams, pages []ShardPage) ([]byte, error) {
+func (a *GeoJSONV2Adapter) MergeWithQuery(
+	_ context.Context,
+	q QueryParams,
+	pages []ShardPage,
+) ([]byte, error) {
 	req := geojsonagg.Request{
 		Query: geojsonagg.Query{
 			StartIndex: q.Offset,
@@ -26,27 +30,28 @@ func (a *GeoJSONV2Adapter) MergeWithQuery(_ context.Context, q QueryParams, page
 		Shards: make([]geojsonagg.ShardPage, 0, len(pages)),
 	}
 
-	for i, page := range pages {
-		p := page.Body
+	type fcRoot struct {
+		Features []json.RawMessage `json:"features"`
+	}
 
-		var root map[string]json.RawMessage
-		if err := json.Unmarshal(p, &root); err != nil {
+	for i, page := range pages {
+		if len(page.Body) == 0 {
+			continue
+		}
+
+		var root fcRoot
+		if err := json.Unmarshal(page.Body, &root); err != nil {
 			return nil, fmt.Errorf("part %d: parse json: %w", i, err)
 		}
-		featuresRaw, ok := root["features"]
-		if !ok {
+		if root.Features == nil {
 			return nil, fmt.Errorf(`part %d: missing required member "features"`, i)
-		}
-		var feats []json.RawMessage
-		if err := json.Unmarshal(featuresRaw, &feats); err != nil {
-			return nil, fmt.Errorf(`part %d: "features" must be an array: %w`, i, err)
 		}
 
 		fromCache := page.CacheStatus == CacheHit
 
 		req.Shards = append(req.Shards, geojsonagg.ShardPage{
 			Meta:     geojsonagg.ShardMeta{FromCache: fromCache, ID: fmt.Sprintf("part-%d", i)},
-			Features: feats,
+			Features: root.Features,
 		})
 	}
 
