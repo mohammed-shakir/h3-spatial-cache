@@ -12,10 +12,14 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 )
 
+const EmptyMarkerID = "__EMPTY__"
+
 type CellIndex interface {
 	GetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters) ([]string, error)
 
 	SetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters, ids []string, ttl time.Duration) error
+
+	MGetIDs(ctx context.Context, layer string, res int, cells []string, filters model.Filters) (map[string][]string, error)
 
 	DelCells(ctx context.Context, layer string, res int, cells []string, filters model.Filters) error
 }
@@ -90,6 +94,49 @@ func (ci *redisCellIndex) SetIDs(
 		return fmt.Errorf("cellindex redis SET %q: %w", key, err)
 	}
 	return nil
+}
+
+func (ci *redisCellIndex) MGetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) (map[string][]string, error) {
+	if len(cells) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	keysSlice := make([]string, len(cells))
+	for i, cell := range cells {
+		keysSlice[i] = keys.CellIndexKey(layer, res, cell, filters)
+	}
+
+	rawMap, err := ci.cli.MGet(ctx, keysSlice)
+	if err != nil {
+		return nil, fmt.Errorf("cellindex redis MGET %d keys: %w", len(keysSlice), err)
+	}
+	if len(rawMap) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	out := make(map[string][]string, len(rawMap))
+
+	for i, cell := range cells {
+		k := keysSlice[i]
+		raw, ok := rawMap[k]
+		if !ok || len(raw) == 0 {
+			continue // treat as miss
+		}
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			// corrupt/invalid entry → treat as miss, but don't fail whole batch
+			continue
+		}
+		out[cell] = ids
+	}
+
+	return out, nil
 }
 
 func (ci *redisCellIndex) DelCells(

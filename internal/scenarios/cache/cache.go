@@ -380,35 +380,43 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		allIDsSet := make(map[string]struct{}, len(cells)*4)
 		allIDs = allIDs[:0]
 
-		for _, cell := range cells {
-			ids, err := e.idx.GetIDs(ctx, q.Layer, resToUse, cell, model.Filters(q.Filters))
-			if err != nil {
-				e.logger.Warn("cell index get error, treating as miss",
-					"layer", q.Layer,
-					"res", resToUse,
-					"cell", cell,
-					"err", err,
-				)
-				missingCells = append(missingCells, cell)
-				indexMissCount++
-				continue
-			}
-			if len(ids) == 0 {
-				missingCells = append(missingCells, cell)
-				indexMissCount++
-				continue
-			}
-
-			cellToIDs[cell] = ids
-			cellsWithIndexHit = append(cellsWithIndexHit, cell)
-			indexHitCount++
-
-			for _, id := range ids {
-				if _, seen := allIDsSet[id]; seen {
+		idsByCell, err := e.idx.MGetIDs(ctx, q.Layer, resToUse, cells, model.Filters(q.Filters))
+		if err != nil {
+			e.logger.Warn("cell index mget error, treating all cells as miss",
+				"layer", q.Layer,
+				"res", resToUse,
+				"cells", len(cells),
+				"err", err,
+			)
+			missingCells = append(missingCells, cells...)
+			indexMissCount += len(cells)
+		} else {
+			for _, cell := range cells {
+				ids, ok := idsByCell[cell]
+				if !ok || len(ids) == 0 {
+					missingCells = append(missingCells, cell)
+					indexMissCount++
 					continue
 				}
-				allIDsSet[id] = struct{}{}
-				allIDs = append(allIDs, id)
+
+				// Known-empty marker: treat as hit with zero features
+				// (no feature-store lookup and no upstream call).
+				if len(ids) == 1 && ids[0] == cellindex.EmptyMarkerID {
+					indexHitCount++
+					continue
+				}
+
+				cellToIDs[cell] = ids
+				cellsWithIndexHit = append(cellsWithIndexHit, cell)
+				indexHitCount++
+
+				for _, id := range ids {
+					if _, seen := allIDsSet[id]; seen {
+						continue
+					}
+					allIDsSet[id] = struct{}{}
+					allIDs = append(allIDs, id)
+				}
 			}
 		}
 
@@ -810,46 +818,40 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 						"cell", cell,
 						"err", err,
 					)
-				} else if len(feats) > 0 {
-					featsMap := make(map[string][]byte, len(feats))
-					ids := make([]string, 0, len(feats))
+				} else {
+					t := max(ttl, 0)
 
-					for i, fr := range feats {
-						var fobj map[string]json.RawMessage
-						if err := json.Unmarshal(fr, &fobj); err != nil {
-							e.logger.Warn("cache v2: feature parse failed",
+					// Known-empty cell: record sentinel so we don't refetch later.
+					if len(feats) == 0 {
+						if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters),
+							[]string{cellindex.EmptyMarkerID}, t); err != nil {
+							e.logger.Warn("cache v2: cell index set empty failed",
 								"layer", q.Layer,
 								"res", res,
 								"cell", cell,
-								"idx", i,
 								"err", err,
 							)
-							continue
+						} else {
+							e.logger.Debug("cache v2 marked empty cell",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+							)
+						}
+					} else {
+						// Non-empty: dedupe and normalize feature IDs with cheaper decoding.
+						featsMap := make(map[string][]byte, len(feats))
+						ids := make([]string, 0, len(feats))
+
+						type minimalFeature struct {
+							ID       json.RawMessage `json:"id"`
+							Geometry json.RawMessage `json:"geometry"`
 						}
 
-						idRaw, hasID := fobj["id"]
-						var normID string
-
-						if hasID && len(bytes.TrimSpace(idRaw)) > 0 {
-							cid, err := geojsonagg.CanonicalIDKey(idRaw)
-							if err != nil {
-								e.logger.Warn("cache v2: invalid feature id, skipping id-based key",
-									"layer", q.Layer,
-									"res", res,
-									"cell", cell,
-									"idx", i,
-									"err", err,
-								)
-							} else {
-								normID = cid
-							}
-						}
-
-						if normID == "" {
-							geomRaw := fobj["geometry"]
-							gh, err := geojsonagg.GeometryHash(geomRaw, geojsonagg.DefaultGeomPrecision)
-							if err != nil {
-								e.logger.Warn("cache v2: geometry hash failed, skipping feature",
+						for i, fr := range feats {
+							var f minimalFeature
+							if err := json.Unmarshal(fr, &f); err != nil {
+								e.logger.Warn("cache v2: feature parse failed",
 									"layer", q.Layer,
 									"res", res,
 									"cell", cell,
@@ -858,40 +860,69 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 								)
 								continue
 							}
-							normID = gh
+
+							var normID string
+
+							if len(bytes.TrimSpace(f.ID)) > 0 {
+								cid, err := geojsonagg.CanonicalIDKey(f.ID)
+								if err != nil {
+									e.logger.Warn("cache v2: invalid feature id, skipping id-based key",
+										"layer", q.Layer,
+										"res", res,
+										"cell", cell,
+										"idx", i,
+										"err", err,
+									)
+								} else {
+									normID = cid
+								}
+							}
+
+							if normID == "" {
+								gh, err := geojsonagg.GeometryHash(f.Geometry, geojsonagg.DefaultGeomPrecision)
+								if err != nil {
+									e.logger.Warn("cache v2: geometry hash failed, skipping feature",
+										"layer", q.Layer,
+										"res", res,
+										"cell", cell,
+										"idx", i,
+										"err", err,
+									)
+									continue
+								}
+								normID = gh
+							}
+
+							if _, exists := featsMap[normID]; !exists {
+								featsMap[normID] = fr
+							}
+							ids = append(ids, normID)
 						}
 
-						if _, exists := featsMap[normID]; !exists {
-							featsMap[normID] = fr
-						}
-						ids = append(ids, normID)
-					}
-
-					if len(featsMap) > 0 && len(ids) > 0 {
-						t := max(ttl, 0)
-
-						if err := e.fs.PutFeatures(ctx, q.Layer, featsMap, t); err != nil {
-							e.logger.Warn("cache v2: feature store put failed",
-								"layer", q.Layer,
-								"res", res,
-								"cell", cell,
-								"err", err,
-							)
-						} else if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters), ids, t); err != nil {
-							e.logger.Warn("cache v2: cell index set failed",
-								"layer", q.Layer,
-								"res", res,
-								"cell", cell,
-								"err", err,
-							)
-						} else {
-							e.logger.Debug("cache v2 filled cell",
-								"layer", q.Layer,
-								"res", res,
-								"cell", cell,
-								"feature_count", len(featsMap),
-								"index_ids", len(ids),
-							)
+						if len(featsMap) > 0 && len(ids) > 0 {
+							if err := e.fs.PutFeatures(ctx, q.Layer, featsMap, t); err != nil {
+								e.logger.Warn("cache v2: feature store put failed",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"err", err,
+								)
+							} else if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters), ids, t); err != nil {
+								e.logger.Warn("cache v2: cell index set failed",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"err", err,
+								)
+							} else {
+								e.logger.Debug("cache v2 filled cell",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"feature_count", len(featsMap),
+									"index_ids", len(ids),
+								)
+							}
 						}
 					}
 				}

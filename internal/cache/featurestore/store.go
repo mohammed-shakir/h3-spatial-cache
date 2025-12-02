@@ -76,11 +76,17 @@ func (s *redisFeatureStore) PutFeatures(
 		t = s.defaultTTL
 	}
 
+	// Build full key -> value map so we can set all at once via client helper.
+	kv := make(map[string][]byte, len(feats))
 	for id, body := range feats {
 		k := featureKey(layer, id)
-		if err := s.cli.Set(ctx, k, body, t); err != nil {
-			return fmt.Errorf("featurestore redis SET %q: %w", k, err)
-		}
+		kv[k] = body
+	}
+
+	// Implemented in redisstore.Client; currently uses existing Set in a loop.
+	// You can optimize this later with a real Redis pipeline if you expose the underlying client.
+	if err := s.cli.MSetWithTTL(ctx, kv, t); err != nil {
+		return fmt.Errorf("featurestore redis MSET %d keys: %w", len(kv), err)
 	}
 	return nil
 }

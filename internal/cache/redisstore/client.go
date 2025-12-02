@@ -139,3 +139,30 @@ func (c *Client) Close() error {
 	}
 	return nil
 }
+
+func (c *Client) MSetWithTTL(
+	ctx context.Context,
+	kv map[string][]byte,
+	ttl time.Duration,
+) error {
+	start := time.Now()
+	if len(kv) == 0 {
+		observability.ObserveCacheOp("mset", nil, time.Since(start).Seconds())
+		return nil
+	}
+
+	_, err := c.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		for k, v := range kv {
+			if err := p.Set(ctx, k, v, ttl).Err(); err != nil {
+				return fmt.Errorf("redis MSET pipeline SET %q: %w", k, err)
+			}
+		}
+		return nil
+	})
+
+	observability.ObserveCacheOp("mset", err, time.Since(start).Seconds())
+	if err != nil {
+		return fmt.Errorf("redis MSET %d keys (pipeline): %w", len(kv), err)
+	}
+	return nil
+}

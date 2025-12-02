@@ -108,6 +108,16 @@ func (r *recordingCellIndex) SetIDs(
 	return nil
 }
 
+func (r *recordingCellIndex) MGetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
+
 func (r *recordingCellIndex) DelCells(
 	ctx context.Context,
 	layer string,

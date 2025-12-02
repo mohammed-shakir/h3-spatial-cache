@@ -122,6 +122,35 @@ func (f *fakeCellIndex) SetIDs(
 	return nil
 }
 
+func (f *fakeCellIndex) MGetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) (map[string][]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make(map[string][]string, len(cells))
+	if f.m == nil {
+		return out, nil
+	}
+
+	for _, cell := range cells {
+		k := cellKey{
+			layer: layer,
+			res:   res,
+			cell:  cell,
+			filt:  filters,
+		}
+		if ids, ok := f.m[k]; ok {
+			out[cell] = append([]string(nil), ids...)
+		}
+	}
+	return out, nil
+}
+
 func newEngineForTest() *Engine {
 	disc := slog.NewTextHandler(io.Discard, &slog.HandlerOptions{})
 	return &Engine{

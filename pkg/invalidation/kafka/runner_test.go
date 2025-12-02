@@ -56,6 +56,16 @@ func (f *fakeCellIndex) SetIDs(
 	return nil
 }
 
+func (f *fakeCellIndex) MGetIDs(
+	_ context.Context,
+	_ string,
+	_ int,
+	_ []string,
+	_ model.Filters,
+) (map[string][]string, error) {
+	return map[string][]string{}, nil
+}
+
 func (f *fakeCellIndex) DelCells(
 	_ context.Context,
 	layer string,
