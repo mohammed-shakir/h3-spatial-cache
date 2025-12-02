@@ -93,8 +93,9 @@ type ShardMeta struct {
 }
 
 type ShardPage struct {
-	Meta     ShardMeta         `json:"meta"`
-	Features []json.RawMessage `json:"features"`
+	Meta       ShardMeta         `json:"meta"`
+	Features   []json.RawMessage `json:"features"`
+	GeomHashes []string          `json:"geomHashes,omitempty"`
 }
 
 type Request struct {

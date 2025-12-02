@@ -399,8 +399,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 					continue
 				}
 
-				// Known-empty marker: treat as hit with zero features
-				// (no feature-store lookup and no upstream call).
 				if len(ids) == 1 && ids[0] == cellindex.EmptyMarkerID {
 					indexHitCount++
 					continue
@@ -458,9 +456,19 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			}
 
 			feats := make([]json.RawMessage, 0, len(ids))
+			hashes := make([]string, 0, len(ids))
+
 			for _, id := range ids {
-				if f, ok := featsByID[id]; ok {
-					feats = append(feats, json.RawMessage(f))
+				f, ok := featsByID[id]
+				if !ok {
+					continue
+				}
+				feats = append(feats, json.RawMessage(f))
+
+				if strings.HasPrefix(id, "gh:") {
+					hashes = append(hashes, id)
+				} else {
+					hashes = append(hashes, "")
 				}
 			}
 
@@ -470,8 +478,9 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			}
 
 			pages = append(pages, composer.ShardPage{
-				Features:    feats,
 				CacheStatus: composer.CacheHit,
+				Features:    feats,
+				GeomHashes:  hashes,
 			})
 		}
 
@@ -811,7 +820,6 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 				} else {
 					t := max(ttl, 0)
 
-					// Known-empty cell: record sentinel so we don't refetch later.
 					if len(feats) == 0 {
 						if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters),
 							[]string{cellindex.EmptyMarkerID}, t); err != nil {
@@ -829,7 +837,6 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 							)
 						}
 					} else {
-						// Non-empty: dedupe and normalize feature IDs with cheaper decoding.
 						featsMap := make(map[string][]byte, len(feats))
 						ids := make([]string, 0, len(feats))
 

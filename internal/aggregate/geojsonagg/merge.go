@@ -51,10 +51,11 @@ func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 	iters := make([]*featIter, 0, len(req.Shards))
 	for si := range req.Shards {
 		it := &featIter{
-			shardIdx: si,
-			features: req.Shards[si].Features,
-			pos:      0,
-			getCmp:   func(f featureParsed) []cmpValue { return extractSortTuple(f, req.Query.Sort) },
+			shardIdx:   si,
+			features:   req.Shards[si].Features,
+			geomHashes: req.Shards[si].GeomHashes,
+			pos:        0,
+			getCmp:     func(f featureParsed) []cmpValue { return extractSortTuple(f, req.Query.Sort) },
 		}
 		iters = append(iters, it)
 	}
@@ -159,10 +160,11 @@ type featureParsed struct {
 }
 
 type featIter struct {
-	shardIdx int
-	features []json.RawMessage
-	pos      int
-	getCmp   func(featureParsed) []cmpValue
+	shardIdx   int
+	features   []json.RawMessage
+	geomHashes []string
+	pos        int
+	getCmp     func(featureParsed) []cmpValue
 }
 
 // returns the next featureParsed from the iterator
@@ -185,6 +187,11 @@ func (it *featIter) next() (featureParsed, bool) {
 		localIdx: it.pos - 1,
 		iter:     it,
 	}
+
+	if len(it.geomHashes) > 0 && fp.localIdx < len(it.geomHashes) {
+		fp.geomHash = it.geomHashes[fp.localIdx]
+	}
+
 	fp.sortVals = it.getCmp(fp)
 	return fp, true
 }

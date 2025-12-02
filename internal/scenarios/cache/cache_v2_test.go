@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -287,6 +288,7 @@ func keysOf(m map[string][]byte) []string {
 	for k := range m {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }
 

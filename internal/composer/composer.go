@@ -37,6 +37,7 @@ type ShardPage struct {
 	Body        []byte
 	CacheStatus CacheStatus
 	Features    []json.RawMessage
+	GeomHashes  []string
 }
 
 type HitClass string

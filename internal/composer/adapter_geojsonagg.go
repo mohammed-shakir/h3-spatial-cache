@@ -35,15 +35,26 @@ func (a *GeoJSONV2Adapter) MergeWithQuery(
 	}
 
 	for i, page := range pages {
-		var feats []json.RawMessage
+		fromCache := page.CacheStatus == CacheHit
 
-		if page.Features != nil {
-			feats = page.Features
-		} else {
-			if len(page.Body) == 0 {
-				continue
+		switch {
+		case len(page.Features) > 0:
+			feats := make([]json.RawMessage, len(page.Features))
+			copy(feats, page.Features)
+
+			var hashes []string
+			if len(page.GeomHashes) > 0 {
+				hashes = make([]string, len(page.GeomHashes))
+				copy(hashes, page.GeomHashes)
 			}
 
+			req.Shards = append(req.Shards, geojsonagg.ShardPage{
+				Meta:       geojsonagg.ShardMeta{FromCache: fromCache, ID: fmt.Sprintf("part-%d", i)},
+				Features:   feats,
+				GeomHashes: hashes,
+			})
+
+		case len(page.Body) > 0:
 			var root fcRoot
 			if err := json.Unmarshal(page.Body, &root); err != nil {
 				return nil, fmt.Errorf("part %d: parse json: %w", i, err)
@@ -51,19 +62,15 @@ func (a *GeoJSONV2Adapter) MergeWithQuery(
 			if root.Features == nil {
 				return nil, fmt.Errorf(`part %d: missing required member "features"`, i)
 			}
-			feats = root.Features
+
+			req.Shards = append(req.Shards, geojsonagg.ShardPage{
+				Meta:     geojsonagg.ShardMeta{FromCache: fromCache, ID: fmt.Sprintf("part-%d", i)},
+				Features: root.Features,
+			})
+
+		default:
+			// Empty shard → nothing to add.
 		}
-
-		if len(feats) == 0 {
-			continue
-		}
-
-		fromCache := page.CacheStatus == CacheHit
-
-		req.Shards = append(req.Shards, geojsonagg.ShardPage{
-			Meta:     geojsonagg.ShardMeta{FromCache: fromCache, ID: fmt.Sprintf("part-%d", i)},
-			Features: feats,
-		})
 	}
 
 	out, _, err := a.Agg.MergeRequest(req)
