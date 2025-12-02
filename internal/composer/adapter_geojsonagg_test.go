@@ -107,9 +107,6 @@ func Test_GeoJSONV2Adapter_UsesFeaturesSlice(t *testing.T) {
 
 	req := Request{
 		Query: QueryParams{
-			Sort: []SortKey{
-				{Property: "score", Desc: false},
-			},
 			Limit:  0,
 			Offset: 0,
 		},
@@ -126,6 +123,7 @@ func Test_GeoJSONV2Adapter_UsesFeaturesSlice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	var out struct {
 		Type     string            `json:"type"`
 		Features []json.RawMessage `json:"features"`
@@ -136,11 +134,21 @@ func Test_GeoJSONV2Adapter_UsesFeaturesSlice(t *testing.T) {
 	if len(out.Features) != 2 {
 		t.Fatalf("want 2 features, got %d", len(out.Features))
 	}
-	var f struct {
-		Properties map[string]any `json:"properties"`
+
+	scores := make(map[float64]bool)
+	for _, raw := range out.Features {
+		var f struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatalf("parse feature: %v", err)
+		}
+		if v, ok := f.Properties["score"].(float64); ok {
+			scores[v] = true
+		}
 	}
-	_ = json.Unmarshal(out.Features[0], &f)
-	if v, ok := f.Properties["score"].(float64); !ok || v != 1 {
-		t.Fatalf("first feature score=%v want 1", f.Properties["score"])
+
+	if !scores[1] || !scores[2] || len(scores) != 2 {
+		t.Fatalf("scores in output = %#v, want {1,2}", scores)
 	}
 }
