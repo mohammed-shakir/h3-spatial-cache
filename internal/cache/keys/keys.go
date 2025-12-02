@@ -1,3 +1,4 @@
+// Package keys defines Redis key formats used by the caching layer.
 package keys
 
 import (
@@ -7,9 +8,11 @@ import (
 	"unicode"
 
 	"github.com/cespare/xxhash/v2"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 )
 
-// generate a cache key for the given parameters
+// Key generate a cache key for the given parameters
 func Key(layer string, res int, cell, filters string) string {
 	layerNorm := sanitizeLayer(strings.TrimSpace(layer))
 	filterText := normalizeFilters(filters)
@@ -110,4 +113,9 @@ func isAlphaNum(r rune) bool {
 	return (r >= 'a' && r <= 'z') ||
 		(r >= 'A' && r <= 'Z') ||
 		unicode.IsDigit(r)
+}
+
+func CellIndexKey(layer string, res int, cell string, filters model.Filters) string {
+	base := Key(layer, res, cell, string(filters))
+	return "idx:" + base
 }

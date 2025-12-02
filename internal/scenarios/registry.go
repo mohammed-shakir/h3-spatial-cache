@@ -1,3 +1,4 @@
+// Package scenarios registers and wires together request handling scenarios.
 package scenarios
 
 import (

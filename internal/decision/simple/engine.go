@@ -1,3 +1,4 @@
+// Package simple provides a simple decision engine implementation.
 package simple
 
 import (
@@ -30,7 +31,7 @@ func New(h hotness.Interface, threshold float64, baseRes, minRes, maxRes int, ma
 	}
 }
 
-// returns true if any cell's current score reaches the threshold
+// ShouldCache returns true if any cell's current score reaches the threshold
 func (e *Engine) ShouldCache(cells []string) bool {
 	if len(cells) == 0 || e.Hot == nil {
 		return false

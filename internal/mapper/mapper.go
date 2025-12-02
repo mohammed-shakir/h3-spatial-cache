@@ -1,3 +1,4 @@
+// Package mapper converts between geometric coordinates and H3 cells.
 package mapper
 
 import (

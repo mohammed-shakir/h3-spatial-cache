@@ -1,3 +1,4 @@
+// Package metricswrap wraps hotness calculations with Prometheus metrics.
 package metricswrap
 
 import (

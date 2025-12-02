@@ -56,3 +56,99 @@ func Test_GeoJSONV2Adapter_SortLimitParity(t *testing.T) {
 		t.Fatalf("want 3 features after limit/offset, got %d", len(out.Features))
 	}
 }
+
+func Test_GeoJSONV2Adapter_UsesShardFeaturesWhenPresent(t *testing.T) {
+	agg := geojsonagg.NewAdvanced()
+	eng := Engine{V2: NewGeoJSONV2Adapter(agg)}
+
+	feat1 := json.RawMessage(`{"type":"Feature","id":"a","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"name":"a"}}`)
+	feat2 := json.RawMessage(`{"type":"Feature","id":"b","geometry":{"type":"Point","coordinates":[1,1]},"properties":{"name":"b"}}`)
+
+	req := Request{
+		Query: QueryParams{
+			Limit:  0,
+			Offset: 0,
+		},
+		Pages: []ShardPage{
+			{
+				Features:    []json.RawMessage{feat1, feat2},
+				CacheStatus: CacheHit,
+			},
+		},
+		AcceptHeader: "application/geo+json",
+	}
+
+	res, err := Compose(context.Background(), eng, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ct := res.ContentType; ct != "application/geo+json" {
+		t.Fatalf("content-type = %s", ct)
+	}
+
+	var out struct {
+		Type     string            `json:"type"`
+		Features []json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if got := len(out.Features); got != 2 {
+		t.Fatalf("features len=%d want 2", got)
+	}
+}
+
+func Test_GeoJSONV2Adapter_UsesFeaturesSlice(t *testing.T) {
+	agg := geojsonagg.NewAdvanced()
+	eng := Engine{V2: NewGeoJSONV2Adapter(agg)}
+
+	f1 := json.RawMessage(`{"type":"Feature","geometry":{"type":"Point","coordinates":[0,0]},"properties":{"score":1}}`)
+	f2 := json.RawMessage(`{"type":"Feature","geometry":{"type":"Point","coordinates":[1,0]},"properties":{"score":2}}`)
+
+	req := Request{
+		Query: QueryParams{
+			Limit:  0,
+			Offset: 0,
+		},
+		Pages: []ShardPage{
+			{
+				Features:    []json.RawMessage{f2, f1},
+				CacheStatus: CacheHit,
+			},
+		},
+		AcceptHeader: "application/geo+json",
+	}
+
+	res, err := Compose(context.Background(), eng, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out struct {
+		Type     string            `json:"type"`
+		Features []json.RawMessage `json:"features"`
+	}
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatalf("parse output: %v", err)
+	}
+	if len(out.Features) != 2 {
+		t.Fatalf("want 2 features, got %d", len(out.Features))
+	}
+
+	scores := make(map[float64]bool)
+	for _, raw := range out.Features {
+		var f struct {
+			Properties map[string]any `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &f); err != nil {
+			t.Fatalf("parse feature: %v", err)
+		}
+		if v, ok := f.Properties["score"].(float64); ok {
+			scores[v] = true
+		}
+	}
+
+	if !scores[1] || !scores[2] || len(scores) != 2 {
+		t.Fatalf("scores in output = %#v, want {1,2}", scores)
+	}
+}

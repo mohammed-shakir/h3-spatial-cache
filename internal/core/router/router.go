@@ -1,3 +1,4 @@
+// Package router defines HTTP request routing and query parsing.
 package router
 
 import (
@@ -17,12 +18,12 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 )
 
-// receives validated query requests and serves them
+// QueryHandler receives validated query requests and serves them
 type QueryHandler interface {
 	HandleQuery(ctx context.Context, w http.ResponseWriter, r *http.Request, q model.QueryRequest)
 }
 
-// validates input query params and calls the handler
+// HandleQuery validates input query params and calls the handler
 func HandleQuery(logger *slog.Logger, _ config.Config, h QueryHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

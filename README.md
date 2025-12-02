@@ -169,7 +169,7 @@ You can run the app either locally or inside the docker container.
 
 ```bash
 set -o allexport; . deploy/compose/.env; set +o allexport
-go run ./cmd/middleware -scenario baseline
+go run ./cmd/middleware -scenario cache
 ```
 
 You can change the `-scenario` flag to test different scenarios (`baseline` or `cache`).
@@ -198,7 +198,7 @@ Then run the load generator:
 go run ./cmd/baseline-loadgen \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 20s \
+  -duration 10s \
   -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
@@ -227,7 +227,7 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 20s \
+  -duration 10s \
   -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
@@ -248,7 +248,7 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 20s \
+  -duration 10s \
   -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \

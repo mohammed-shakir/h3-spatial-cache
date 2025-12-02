@@ -9,7 +9,7 @@ import (
 
 type echoAgg struct{}
 
-func (e *echoAgg) MergeWithQuery(_ context.Context, q composer.QueryParams, _ [][]byte) ([]byte, error) {
+func (e *echoAgg) MergeWithQuery(_ context.Context, q composer.QueryParams, _ []composer.ShardPage) ([]byte, error) {
 	_ = q
 	return []byte(`{"type":"FeatureCollection","features":[
 		{"type":"Feature","id":"1","geometry":null,"properties":{"ts":"2024-01-01T00:00:00Z","v":10}},

@@ -1,6 +1,7 @@
 package cache_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,6 +16,8 @@ import (
 	miniredis "github.com/alicebob/miniredis/v2"
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
+	cachev2 "github.com/mohammed-shakir/h3-spatial-cache/internal/cache/v2"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	h3mapper "github.com/mohammed-shakir/h3-spatial-cache/internal/mapper/h3"
@@ -73,11 +76,22 @@ func (g *gsDouble) handler(w http.ResponseWriter, r *http.Request) {
 	atomic.AddInt64(&g.inflight, -1)
 }
 
-func fullFeature(name string) []byte {
-	return []byte(`{"type":"FeatureCollection","features":[{"type":"Feature","id":"` + name + `","geometry":null,"properties":{"name":"` + name + `"}}]}`)
+func fmtInt(n int) string {
+	const digits = "0123456789"
+	if n == 0 {
+		return "0"
+	}
+	s := make([]byte, 0, 20)
+	for n > 0 {
+		s = append([]byte{digits[n%10]}, s...)
+		n /= 10
+	}
+	return string(s)
 }
 
 func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
+	ctx := context.Background()
+
 	gs := &gsDouble{}
 	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
 	defer srv.Close()
@@ -99,9 +113,23 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	if err != nil || len(cells) == 0 {
 		t.Fatalf("h3 mapping: %v", err)
 	}
+
+	rc, err := redisstore.New(ctx, cfg.RedisAddr)
+	if err != nil {
+		t.Fatalf("redis client: %v", err)
+	}
+	v2store := cachev2.NewRedisStore(rc, cfg.CacheTTLDefault)
+
 	for i, c := range cells {
-		k := keys.Key("demo:NR_polygon", cfg.H3Res, c, "")
-		_ = mr.Set(k, string(fullFeature(c+":"+fmtInt(i))))
+		id := c + ":" + fmtInt(i)
+		feat := []byte(`{"type":"Feature","id":"` + id + `","geometry":null,"properties":{"name":"` + id + `"}}`)
+
+		if err := v2store.Features.PutFeatures(ctx, "demo:NR_polygon", map[string][]byte{id: feat}, cfg.CacheTTLDefault); err != nil {
+			t.Fatalf("seed feature store: %v", err)
+		}
+		if err := v2store.Cells.SetIDs(ctx, "demo:NR_polygon", cfg.H3Res, c, "", []string{id}, cfg.CacheTTLDefault); err != nil {
+			t.Fatalf("seed cell index: %v", err)
+		}
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -111,10 +139,10 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
-	q := url.Values{}
-	q.Set("layer", "demo:NR_polygon")
-	q.Set("bbox", bb.String())
-	req.URL.RawQuery = q.Encode()
+	qv := url.Values{}
+	qv.Set("layer", "demo:NR_polygon")
+	qv.Set("bbox", bb.String())
+	req.URL.RawQuery = qv.Encode()
 
 	rr := httptest.NewRecorder()
 	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
@@ -138,6 +166,8 @@ func TestCache_FullHit_NoUpstreamCalls(t *testing.T) {
 }
 
 func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
+	ctx := context.Background()
+
 	gs := &gsDouble{
 		started: make(chan struct{}, 128),
 		release: make(chan struct{}),
@@ -177,16 +207,30 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 		t.Fatalf("need >=4 cells for this test; got %d", len(cells))
 	}
 
+	rc, err := redisstore.New(ctx, cfg.RedisAddr)
+	if err != nil {
+		t.Fatalf("redis client: %v", err)
+	}
+	v2store := cachev2.NewRedisStore(rc, cfg.CacheTTLDefault)
+
 	for i := range len(cells) / 2 {
-		k := keys.Key("demo:NR_polygon", cfg.H3Res, cells[i], "")
-		_ = mr.Set(k, string(fullFeature("hit-"+fmtInt(i))))
+		c := cells[i]
+		id := "hit-" + fmtInt(i)
+		feat := []byte(`{"type":"Feature","id":"` + id + `","geometry":null,"properties":{"name":"` + id + `"}}`)
+
+		if err := v2store.Features.PutFeatures(ctx, "demo:NR_polygon", map[string][]byte{id: feat}, cfg.CacheTTLDefault); err != nil {
+			t.Fatalf("seed feature store: %v", err)
+		}
+		if err := v2store.Cells.SetIDs(ctx, "demo:NR_polygon", cfg.H3Res, c, "", []string{id}, cfg.CacheTTLDefault); err != nil {
+			t.Fatalf("seed cell index: %v", err)
+		}
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
-	q := url.Values{}
-	q.Set("layer", "demo:NR_polygon")
-	q.Set("bbox", bb.String())
-	req.URL.RawQuery = q.Encode()
+	qv := url.Values{}
+	qv.Set("layer", "demo:NR_polygon")
+	qv.Set("bbox", bb.String())
+	req.URL.RawQuery = qv.Encode()
 	rr := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -212,16 +256,26 @@ func TestCache_PartialMiss_FetchesOnlyMissing_BoundedConcurrency(t *testing.T) {
 	if gs.maxInflight > int64(cfg.CacheFillMaxWorkers) {
 		t.Fatalf("max inflight=%d exceeded workers=%d", gs.maxInflight, cfg.CacheFillMaxWorkers)
 	}
+
 	for i := len(cells) / 2; i < len(cells); i++ {
-		k := keys.Key("demo:NR_polygon", cfg.H3Res, cells[i], "")
-		if !mr.Exists(k) {
-			t.Fatalf("missing cached key: %s", k)
+		cell := cells[i]
+
+		var keyForCell string
+		for _, k := range mr.Keys() {
+			if strings.Contains(k, cell) {
+				keyForCell = k
+				break
+			}
 		}
-		ttl := mr.TTL(k)
+		if keyForCell == "" {
+			t.Fatalf("missing cached key for cell: %s", cell)
+		}
+		ttl := mr.TTL(keyForCell)
 		if ttl <= 0 || ttl > 2*time.Minute {
-			t.Fatalf("unexpected TTL for %s: %v", k, ttl)
+			t.Fatalf("unexpected TTL for cell %s (key %s): %v", cell, keyForCell, ttl)
 		}
 	}
+
 	if len(rr.Body.Bytes()) == 0 {
 		t.Fatalf("expected non-empty body on partial miss")
 	}
@@ -260,7 +314,6 @@ func TestCache_FullMiss_ReadThrough_Caches(t *testing.T) {
 		t.Fatalf("h3 mapping: %v", err)
 	}
 
-	// ensure cache is empty first
 	for _, c := range cells {
 		k := keys.Key("demo:NR_polygon", cfg.H3Res, c, "")
 		if mr.Exists(k) {
@@ -275,10 +328,10 @@ func TestCache_FullMiss_ReadThrough_Caches(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
-	q := url.Values{}
-	q.Set("layer", "demo:NR_polygon")
-	q.Set("bbox", bb.String())
-	req.URL.RawQuery = q.Encode()
+	qv := url.Values{}
+	qv.Set("layer", "demo:NR_polygon")
+	qv.Set("bbox", bb.String())
+	req.URL.RawQuery = qv.Encode()
 	rr := httptest.NewRecorder()
 	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
 
@@ -288,19 +341,6 @@ func TestCache_FullMiss_ReadThrough_Caches(t *testing.T) {
 	if gs.calls == 0 {
 		t.Fatalf("expected upstream to be called on full miss")
 	}
-}
-
-func fmtInt(n int) string {
-	const digits = "0123456789"
-	if n == 0 {
-		return "0"
-	}
-	s := make([]byte, 0, 20)
-	for n > 0 {
-		s = append([]byte{digits[n%10]}, s...)
-		n /= 10
-	}
-	return string(s)
 }
 
 func TestCache_BackendErrorOnMiss_ReturnsErrorBody(t *testing.T) {
@@ -328,10 +368,10 @@ func TestCache_BackendErrorOnMiss_ReturnsErrorBody(t *testing.T) {
 	bb := model.BBox{X1: 18.00, Y1: 59.32, X2: 18.02, Y2: 59.34, SRID: "EPSG:4326"}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
-	q := url.Values{}
-	q.Set("layer", "demo:NR_polygon")
-	q.Set("bbox", bb.String())
-	req.URL.RawQuery = q.Encode()
+	qv := url.Values{}
+	qv.Set("layer", "demo:NR_polygon")
+	qv.Set("bbox", bb.String())
+	req.URL.RawQuery = qv.Encode()
 	rr := httptest.NewRecorder()
 
 	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon", BBox: &bb})
@@ -344,7 +384,6 @@ func TestCache_BackendErrorOnMiss_ReturnsErrorBody(t *testing.T) {
 	}
 }
 
-// NEW: input validation (no bbox/polygon) should be 400 with an error message
 func TestCache_InputValidationError_Returns400(t *testing.T) {
 	mr, _ := miniredis.Run()
 	defer mr.Close()
@@ -364,9 +403,9 @@ func TestCache_InputValidationError_Returns400(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/query", nil)
-	q := url.Values{}
-	q.Set("layer", "demo:NR_polygon")
-	req.URL.RawQuery = q.Encode()
+	qv := url.Values{}
+	qv.Set("layer", "demo:NR_polygon")
+	req.URL.RawQuery = qv.Encode()
 	rr := httptest.NewRecorder()
 
 	h.HandleQuery(req.Context(), rr, req, model.QueryRequest{Layer: "demo:NR_polygon"})
@@ -376,5 +415,93 @@ func TestCache_InputValidationError_Returns400(t *testing.T) {
 	}
 	if len(rr.Body.Bytes()) == 0 {
 		t.Fatalf("expected non-empty body on invalid query")
+	}
+}
+
+func TestCache_MultiResolution_WarmCoarseReadFine_FeaturesReused(t *testing.T) {
+	ctx := context.Background()
+
+	gs := &gsDouble{}
+	srv := httptest.NewServer(http.HandlerFunc(gs.handler))
+	defer srv.Close()
+
+	mr, _ := miniredis.Run()
+	defer mr.Close()
+
+	baseCfg := config.FromEnv()
+	baseCfg.Scenario = "cache"
+	baseCfg.RedisAddr = mr.Addr()
+	baseCfg.GeoServerURL = strings.TrimRight(srv.URL, "/")
+	baseCfg.CacheTTLDefault = 30 * time.Second
+	baseCfg.AdaptiveEnabled = false
+	baseCfg.AdaptiveDryRun = false
+
+	// coarse handler (res=6)
+	cfg6 := baseCfg
+	cfg6.H3Res = 6
+	cfg6.H3ResMin = 6
+	cfg6.H3ResMax = 6
+
+	// fine handler (res=8)
+	cfg8 := baseCfg
+	cfg8.H3Res = 8
+	cfg8.H3ResMin = 8
+	cfg8.H3ResMax = 8
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	h6, err := scenarios.New("cache", cfg6, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario res=6: %v", err)
+	}
+	h8, err := scenarios.New("cache", cfg8, logger, nil)
+	if err != nil {
+		t.Fatalf("scenario res=8: %v", err)
+	}
+
+	layer := "demo:NR_polygon"
+	outer := model.BBox{X1: 18.00, Y1: 59.30, X2: 18.20, Y2: 59.40, SRID: "EPSG:4326"}
+	inner := model.BBox{X1: 18.05, Y1: 59.32, X2: 18.10, Y2: 59.35, SRID: "EPSG:4326"}
+
+	// 1) warm coarse (res=6)
+	req1 := httptest.NewRequest(http.MethodGet, "/query", nil)
+	qv1 := url.Values{}
+	qv1.Set("layer", layer)
+	qv1.Set("bbox", outer.String())
+	req1.URL.RawQuery = qv1.Encode()
+	rr1 := httptest.NewRecorder()
+	h6.HandleQuery(ctx, rr1, req1, model.QueryRequest{Layer: layer, BBox: &outer})
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("warm coarse status=%d want 200", rr1.Code)
+	}
+	callsAfterCoarse := atomic.LoadInt64(&gs.calls)
+
+	// 2) fine query inside (res=8)
+	req2 := httptest.NewRequest(http.MethodGet, "/query", nil)
+	qv2 := url.Values{}
+	qv2.Set("layer", layer)
+	qv2.Set("bbox", inner.String())
+	req2.URL.RawQuery = qv2.Encode()
+	rr2 := httptest.NewRecorder()
+	h8.HandleQuery(ctx, rr2, req2, model.QueryRequest{Layer: layer, BBox: &inner})
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("fine status=%d want 200", rr2.Code)
+	}
+
+	callsAfterFine := atomic.LoadInt64(&gs.calls)
+	if callsAfterFine == 0 || callsAfterFine < callsAfterCoarse {
+		t.Fatalf("expected additional upstream calls for fine res; coarse=%d fine=%d",
+			callsAfterCoarse, callsAfterFine)
+	}
+
+	// Check that we didn't explode number of feature keys: they should be <= number of upstream calls.
+	var featKeys int
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, "feat:") {
+			featKeys++
+		}
+	}
+	if featKeys > int(callsAfterFine) {
+		t.Fatalf("unexpectedly many feature keys=%d vs upstream calls=%d", featKeys, callsAfterFine)
 	}
 }

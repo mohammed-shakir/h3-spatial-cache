@@ -1,3 +1,4 @@
+// Package simple provides a basic adaptive decider implementation.
 package simple
 
 import (

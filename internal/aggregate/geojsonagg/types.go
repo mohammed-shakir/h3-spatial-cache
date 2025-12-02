@@ -14,7 +14,7 @@ const (
 	Desc
 )
 
-// accepts both string and int representations
+// UnmarshalJSON accepts both string and int representations
 func (d *Direction) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {
@@ -43,7 +43,7 @@ const (
 	NullsFirst
 )
 
-// enables nulls ordering policy in sort keys
+// UnmarshalJSON enables nulls ordering policy in sort keys
 func (n *NullsPolicy) UnmarshalJSON(b []byte) error {
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {
@@ -93,8 +93,9 @@ type ShardMeta struct {
 }
 
 type ShardPage struct {
-	Meta     ShardMeta         `json:"meta"`
-	Features []json.RawMessage `json:"features"`
+	Meta       ShardMeta         `json:"meta"`
+	Features   []json.RawMessage `json:"features"`
+	GeomHashes []string          `json:"geomHashes,omitempty"`
 }
 
 type Request struct {

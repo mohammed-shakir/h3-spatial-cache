@@ -1,9 +1,10 @@
+// Package cache implements the cache-aware query scenario.
 package cache
 
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,8 +19,11 @@ import (
 
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/aggregate/geojsonagg"
 	cacheiface "github.com/mohammed-shakir/h3-spatial-cache/internal/cache"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/cellindex"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/featurestore"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
+	cachev2 "github.com/mohammed-shakir/h3-spatial-cache/internal/cache/v2"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/composer"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/executor"
@@ -44,6 +48,8 @@ type Engine struct {
 	mapr            *h3mapper.Mapper
 	eng             composer.Engine
 	store           cacheiface.Interface
+	fs              featurestore.FeatureStore
+	idx             cellindex.CellIndex
 	owsURL          *url.URL
 	http            *http.Client
 	exec            executor.Interface
@@ -71,6 +77,7 @@ func newCache(cfg config.Config, logger *slog.Logger, ex executor.Interface) (ro
 	if err != nil {
 		return nil, fmt.Errorf("redis client: %w", err)
 	}
+	v2store := cachev2.NewRedisStore(rc, cfg.CacheTTLDefault)
 	ows := ogc.OWSEndpoint(cfg.GeoServerURL)
 	u, err := url.Parse(ows)
 	if err != nil {
@@ -89,6 +96,9 @@ func newCache(cfg config.Config, logger *slog.Logger, ex executor.Interface) (ro
 		},
 
 		store: newCacheAdapter(rc, cfg.CacheOpTimeout),
+
+		fs:  v2store.Features,
+		idx: v2store.Cells,
 
 		owsURL: u,
 		http:   httpclient.NewOutbound(),
@@ -202,7 +212,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// map footprint to cells at base resolution
 	cells, err := e.cellsForRes(q, e.res)
 	if err != nil {
 		e.logger.Error("h3 mapping failed", "err", err)
@@ -227,7 +236,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// hotness hooks (cheap, sharded)
 	if e.adaptiveEnabled && e.hot != nil {
 		for _, c := range cells {
 			e.hot.Inc(c)
@@ -235,10 +243,10 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		}
 	}
 
-	// decision
 	dec := adaptive.Decision{Type: adaptive.DecisionFill, Resolution: e.res, TTL: e.ttlFor(q.Layer)}
 	reason := adaptive.ReasonDefaultFill
 	applyDecision := e.adaptiveEnabled && !e.adaptiveDryRun && e.decider != nil
+
 	if e.adaptiveEnabled && e.decider != nil {
 		decideStart := time.Now()
 		d, r := e.decider.Decide(adaptive.Query{
@@ -252,15 +260,18 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 
 		observability.ObserveAdaptiveDecision(decisionLabel(dec.Type), string(reason))
 		e.logger.Info("adaptive_decision",
-			"run_id", e.runID, "layer", q.Layer,
-			"decision", decisionLabel(dec.Type), "reason", string(reason),
-			"resolution", dec.Resolution, "ttl", dec.TTL.String(),
+			"run_id", e.runID,
+			"layer", q.Layer,
+			"decision", decisionLabel(dec.Type),
+			"reason", string(reason),
+			"resolution", dec.Resolution,
+			"ttl", dec.TTL.String(),
 			"cells", len(cells),
 			"dry_run", e.adaptiveDryRun,
-			"dur", time.Since(decideStart).String())
+			"dur", time.Since(decideStart).String(),
+		)
 	}
 
-	// apply resolution and TTL based on decision
 	resToUse := e.res
 	if applyDecision {
 		resToUse = dec.Resolution
@@ -270,7 +281,6 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		ttl = dec.TTL
 	}
 
-	// remap cells if resolution changed
 	if resToUse != e.res {
 		cells, err = e.cellsForRes(q, resToUse)
 		if err != nil {
@@ -285,7 +295,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 			e.logger.Error("cache bypass upstream error",
 				"scenario", "cache",
 				"layer", q.Layer,
-				"res", resToUse,
+				"res_to_use", resToUse,
 				"cells", len(cells),
 				"decision", decisionLabel(dec.Type),
 				"reason", string(reason),
@@ -328,12 +338,11 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		w.WriteHeader(res.StatusCode)
 		_, _ = w.Write(res.Body)
 
-		// treat as a miss (no cache involvement) and not stale
 		observability.ObserveSpatialRead("miss", false)
 
 		e.logger.Info("cache bypass",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
 			"decision", decisionLabel(dec.Type),
 			"reason", string(reason),
@@ -343,111 +352,220 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		return
 	}
 
-	// choose path based on decision type
-	useLookup := true
-	writeFill := true
-
-	switch dec.Type {
-	case adaptive.DecisionBypass:
-		if applyDecision {
-			writeFill = false
-			ttl = 0
-		}
-	case adaptive.DecisionFill:
-		// normal path: read + write
-	}
-
 	serveOnlyIfFresh := e.serveFreshOnly || (applyDecision && dec.Type == adaptive.DecisionServeOnlyIfFresh)
 
-	// build keys for the selected resolution
-	keysList := make([]string, 0, len(cells))
-	for _, c := range cells {
-		keysList = append(keysList, keys.Key(q.Layer, resToUse, c, q.Filters))
-	}
+	pages := make([]composer.ShardPage, 0, len(cells))
+	var (
+		missing        []string
+		indexHitCount  int
+		indexMissCount int
+		allIDs         []string
+	)
 
-	// cache lookup
-	var hits map[string][]byte
-	var staleAny bool
-	if useLookup {
-		m, err := e.store.MGet(keysList)
-		if err != nil {
-			e.logger.Warn("cache mget error, continuing with fetch path", "err", err)
-			hits = map[string][]byte{}
-		} else {
-			hits = m
+	if e.idx == nil || e.fs == nil {
+		missing = append(missing, cells...)
+
+		if serveOnlyIfFresh && len(missing) > 0 {
+			observability.IncFreshReject("miss")
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte("fresh content required"))
+			return
 		}
 	} else {
-		hits = map[string][]byte{}
-	}
+		cellToIDs := make(map[string][]string, len(cells))
+		cellsWithIndexHit := make([]string, 0, len(cells))
+		missingCells := make([]string, 0, len(cells))
 
-	// separate hits/misses
-	pages := make([]composer.ShardPage, 0, len(keysList))
-	missing := make([]string, 0, len(keysList))
-	lastInv := observability.GetLayerInvalidatedAtUnix(q.Layer)
-	for i, k := range keysList {
-		if v, ok := hits[k]; ok && len(v) > 0 {
-			body, wroteAt, _ := decodeCacheValue(v)
-			if wroteAt > 0 && lastInv > 0 && wroteAt < lastInv {
-				staleAny = true
-			}
-			pages = append(pages, composer.ShardPage{Body: body, CacheStatus: composer.CacheHit})
-			continue
-		}
-		missing = append(missing, cells[i])
-	}
+		allIDsSet := make(map[string]struct{}, len(cells)*4)
+		allIDs = allIDs[:0]
 
-	if serveOnlyIfFresh && (staleAny || len(missing) > 0) {
-		reason := "miss"
-		if staleAny {
-			reason = "stale"
-		}
-		observability.IncFreshReject(reason)
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusPreconditionFailed)
-		_, _ = w.Write([]byte("fresh content required"))
-		return
-	}
-
-	if len(missing) == 0 {
-		req := composer.Request{
-			Query:        composer.QueryParams{Limit: 0, Offset: 0},
-			Pages:        pages,
-			AcceptHeader: r.Header.Get("Accept"),
-			OutputFormat: r.URL.Query().Get("outputFormat"),
-		}
-
-		res, err := composer.Compose(r.Context(), e.eng, req)
+		idsByCell, err := e.idx.MGetIDs(ctx, q.Layer, resToUse, cells, model.Filters(q.Filters))
 		if err != nil {
-			e.logger.Error("cache compose error on full-hit",
-				"scenario", "cache",
+			e.logger.Warn("cell index mget error, treating all cells as miss",
 				"layer", q.Layer,
 				"res", resToUse,
 				"cells", len(cells),
-				"hits", len(pages),
+				"err", err,
+			)
+			missingCells = append(missingCells, cells...)
+			indexMissCount += len(cells)
+		} else {
+			for _, cell := range cells {
+				ids, ok := idsByCell[cell]
+				if !ok || len(ids) == 0 {
+					missingCells = append(missingCells, cell)
+					indexMissCount++
+					continue
+				}
+
+				if len(ids) == 1 && ids[0] == cellindex.EmptyMarkerID {
+					indexHitCount++
+					continue
+				}
+
+				cellToIDs[cell] = ids
+				cellsWithIndexHit = append(cellsWithIndexHit, cell)
+				indexHitCount++
+
+				for _, id := range ids {
+					if _, seen := allIDsSet[id]; seen {
+						continue
+					}
+					allIDsSet[id] = struct{}{}
+					allIDs = append(allIDs, id)
+				}
+			}
+		}
+
+		featsByID := make(map[string][]byte, len(allIDs))
+		var featsFound, featsMissing int
+
+		if len(allIDs) > 0 {
+			m, err := e.fs.MGetFeatures(ctx, q.Layer, allIDs)
+			if err != nil {
+				e.logger.Warn("feature store mget error, treating as miss for affected cells",
+					"layer", q.Layer,
+					"res", resToUse,
+					"ids", len(allIDs),
+					"err", err,
+				)
+				missingCells = append(missingCells, cellsWithIndexHit...)
+				indexMissCount += len(cellsWithIndexHit)
+				cellsWithIndexHit = cellsWithIndexHit[:0]
+			} else {
+				featsByID = m
+				for _, id := range allIDs {
+					if _, ok := featsByID[id]; ok {
+						featsFound++
+					} else {
+						featsMissing++
+						e.logger.Debug("feature missing from feature store",
+							"layer", q.Layer,
+							"id", id,
+						)
+					}
+				}
+			}
+		}
+
+		for _, cell := range cellsWithIndexHit {
+			ids := cellToIDs[cell]
+			if len(ids) == 0 {
+				continue
+			}
+
+			feats := make([]json.RawMessage, 0, len(ids))
+			hashes := make([]string, 0, len(ids))
+
+			for _, id := range ids {
+				f, ok := featsByID[id]
+				if !ok {
+					continue
+				}
+				feats = append(feats, json.RawMessage(f))
+
+				if strings.HasPrefix(id, "gh:") {
+					hashes = append(hashes, id)
+				} else {
+					hashes = append(hashes, "")
+				}
+			}
+
+			if len(feats) == 0 {
+				missingCells = append(missingCells, cell)
+				continue
+			}
+
+			pages = append(pages, composer.ShardPage{
+				CacheStatus: composer.CacheHit,
+				Features:    feats,
+				GeomHashes:  hashes,
+			})
+		}
+
+		staleAny := false
+		lastInv := observability.GetLayerInvalidatedAtUnix(q.Layer)
+		if lastInv > 0 && len(pages) > 0 {
+			staleAny = true
+		}
+
+		if serveOnlyIfFresh && (staleAny || len(missingCells) > 0) {
+			reasonStr := "miss"
+			if staleAny {
+				reasonStr = "stale"
+			}
+			observability.IncFreshReject(reasonStr)
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte("fresh content required"))
+			return
+		}
+
+		if len(missingCells) == 0 {
+			req := composer.Request{
+				Query:        composer.QueryParams{Limit: 0, Offset: 0},
+				Pages:        pages,
+				AcceptHeader: r.Header.Get("Accept"),
+				OutputFormat: r.URL.Query().Get("outputFormat"),
+			}
+
+			res, err := composer.Compose(r.Context(), e.eng, req)
+			if err != nil {
+				e.logger.Error("cache compose error on full-hit (feature-centric)",
+					"scenario", "cache",
+					"layer", q.Layer,
+					"res_to_use", resToUse,
+					"cells", len(cells),
+					"index_hits", indexHitCount,
+					"index_misses", indexMissCount,
+					"unique_ids", len(allIDs),
+					"features_found", featsFound,
+					"features_missing", featsMissing,
+					"ttl_used", ttl.String(),
+					"decision", decisionLabel(dec.Type),
+					"reason", string(reason),
+					"run_id", e.runID,
+					"err", err,
+				)
+				http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
+				return
+			}
+			w.Header().Set("Content-Type", res.ContentType)
+			w.WriteHeader(res.StatusCode)
+			_, _ = w.Write(res.Body)
+
+			observability.ObserveSpatialRead("hit", staleAny)
+			observability.AddCacheHits(len(pages))
+
+			e.logger.Info("cache full-hit (feature-centric)",
+				"layer", q.Layer,
+				"res_to_use", resToUse,
+				"cells", len(cells),
+				"index_hits", indexHitCount,
+				"index_misses", indexMissCount,
+				"unique_ids", len(allIDs),
+				"features_found", featsFound,
+				"features_missing", featsMissing,
 				"ttl_used", ttl.String(),
+				"dur", time.Since(start).String(),
 				"decision", decisionLabel(dec.Type),
 				"reason", string(reason),
 				"run_id", e.runID,
-				"err", err,
 			)
-			http.Error(w, "compose error: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		w.Header().Set("Content-Type", res.ContentType)
-		w.WriteHeader(res.StatusCode)
-		_, _ = w.Write(res.Body)
-		observability.ObserveSpatialRead("hit", staleAny)
+
 		observability.AddCacheHits(len(pages))
-		e.logger.Info("cache full-hit",
-			"layer", q.Layer, "res", resToUse,
-			"cells", len(cells), "hits", len(pages), "misses", 0,
-			"ttl_used", ttl.String(),
-			"dur", time.Since(start).String(),
-			"decision", decisionLabel(dec.Type), "reason", string(reason), "run_id", e.runID)
-		return
+		missing = missingCells
 	}
 
 	fillStart := time.Now()
+
+	if len(missing) == 0 {
+		missing = nil
+	}
+
 	jobs := make(chan string, e.queueSize)
 	results := make(chan result, len(missing))
 
@@ -467,10 +585,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 					return
 				default:
 				}
-				res := e.fetchCell(ctx, q, cell, resToUse)
-				if res.err == nil && len(res.body) > 0 && writeFill {
-					_ = e.store.Set(res.key, encodeCacheValue(res.body), ttl)
-				}
+				res := e.fetchCell(ctx, q, cell, resToUse, ttl)
 				select {
 				case results <- res:
 				case <-ctx.Done():
@@ -494,13 +609,15 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	wg.Wait()
 	close(results)
 
-	var fetched [][]byte
+	fetched := make([][]byte, 0, len(missing))
 	var errs []error
-	for r := range results {
-		if r.err != nil {
-			errs = append(errs, r.err)
-		} else if len(r.body) > 0 {
-			fetched = append(fetched, r.body)
+	for rres := range results {
+		if rres.err != nil {
+			errs = append(errs, rres.err)
+			continue
+		}
+		if len(rres.body) > 0 {
+			fetched = append(fetched, rres.body)
 		}
 	}
 
@@ -511,7 +628,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	if len(errs) > 0 {
-		msg := strings.Builder{}
+		var msg strings.Builder
 		msg.WriteString("one or more upstream errors (")
 		msg.WriteString(fmt.Sprintf("%d/%d cells failed): ", len(errs), len(missing)))
 		for i, ferr := range errs {
@@ -524,7 +641,7 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 		e.logger.Error("cache upstream errors during fill",
 			"scenario", "cache",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
 			"missing", len(missing),
 			"err_count", len(errs),
@@ -540,19 +657,21 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	}
 
 	req := composer.Request{
-		Query: composer.QueryParams{Limit: 0, Offset: 0},
-		Pages: pages, AcceptHeader: r.Header.Get("Accept"),
+		Query:        composer.QueryParams{Limit: 0, Offset: 0},
+		Pages:        pages,
+		AcceptHeader: r.Header.Get("Accept"),
 		OutputFormat: r.URL.Query().Get("outputFormat"),
 	}
 	res, err := composer.Compose(r.Context(), e.eng, req)
 	if err != nil {
-		e.logger.Error("cache compose error on partial-miss",
+		e.logger.Error("cache compose error on partial-miss (feature-centric)",
 			"scenario", "cache",
 			"layer", q.Layer,
-			"res", resToUse,
+			"res_to_use", resToUse,
 			"cells", len(cells),
-			"hits", len(pages)-len(fetched),
-			"misses", len(missing),
+			"index_hits", indexHitCount,
+			"index_misses", indexMissCount,
+			"missing_cells", len(missing),
 			"ttl_used", ttl.String(),
 			"decision", decisionLabel(dec.Type),
 			"reason", string(reason),
@@ -565,39 +684,23 @@ func (e *Engine) HandleQuery(ctx context.Context, w http.ResponseWriter, r *http
 	w.Header().Set("Content-Type", res.ContentType)
 	w.WriteHeader(res.StatusCode)
 	_, _ = w.Write(res.Body)
-	observability.ObserveSpatialRead("miss", staleAny)
-	e.logger.Info("cache partial-miss",
-		"layer", q.Layer, "res", resToUse,
-		"cells", len(cells), "hits", len(pages)-len(fetched), "misses", len(missing),
+
+	observability.ObserveSpatialRead("miss", false)
+	e.logger.Info("cache partial-miss (feature-centric)",
+		"layer", q.Layer,
+		"res_to_use", resToUse,
+		"cells", len(cells),
+		"index_hits", indexHitCount,
+		"index_misses", indexMissCount,
+		"missing_cells", len(missing),
+		"unique_ids", len(allIDs),
 		"ttl_used", ttl.String(),
 		"fill_dur", time.Since(fillStart).String(),
 		"total_dur", time.Since(start).String(),
-		"decision", decisionLabel(dec.Type), "reason", string(reason), "run_id", e.runID)
-}
-
-func encodeCacheValue(body []byte) []byte {
-	h := make([]byte, 3+8+len(body))
-	copy(h[:3], []byte{'S', 'C', '1'})
-	ts := max(time.Now().UTC().Unix(), 0)
-	var buf8 [8]byte
-	b := bytes.NewBuffer(buf8[:0])
-	if err := binary.Write(b, binary.BigEndian, ts); err == nil {
-		copy(h[3:11], buf8[:])
-	}
-	copy(h[11:], body)
-	return h
-}
-
-//nolint:unparam // keep 'ok' for forward compatibility
-func decodeCacheValue(v []byte) (body []byte, wroteAt int64, ok bool) {
-	if len(v) >= 11 && v[0] == 'S' && v[1] == 'C' && v[2] == '1' {
-		var ts int64
-		if err := binary.Read(bytes.NewReader(v[3:11]), binary.BigEndian, &ts); err != nil {
-			return v[11:], 0, true
-		}
-		return v[11:], ts, true
-	}
-	return v, 0, false
+		"decision", decisionLabel(dec.Type),
+		"reason", string(reason),
+		"run_id", e.runID,
+	)
 }
 
 func (e *Engine) cellsForRes(q model.QueryRequest, res int) (model.Cells, error) {
@@ -635,9 +738,16 @@ func (e *Engine) ttlFor(layer string) time.Duration {
 	return e.ttlDefault
 }
 
-// fetches a single h3 cell from geoserver
-func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int) result {
+func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell string, res int, ttl time.Duration) result {
 	key := keys.Key(q.Layer, res, cell, q.Filters)
+
+	if e.http == nil || e.owsURL == nil {
+		return result{
+			cell: cell,
+			key:  key,
+			err:  fmt.Errorf("cache fetchCell: http client or owsURL not configured"),
+		}
+	}
 
 	cellPolyJSON, err := cellPolygonGeoJSON(cell)
 	if err != nil {
@@ -680,6 +790,143 @@ func (e *Engine) fetchCell(ctx context.Context, q model.QueryRequest, cell strin
 	if err != nil {
 		return result{cell: cell, key: key, err: fmt.Errorf("cell %s read: %w", cell, err)}
 	}
+
+	if e.fs != nil && e.idx != nil {
+		var root map[string]json.RawMessage
+		if err := json.Unmarshal(body, &root); err != nil {
+			e.logger.Warn("cache v2: parse FeatureCollection root failed",
+				"layer", q.Layer,
+				"res", res,
+				"cell", cell,
+				"err", err,
+			)
+		} else {
+			featuresRaw, ok := root["features"]
+			if !ok {
+				e.logger.Warn("cache v2: FeatureCollection missing features array",
+					"layer", q.Layer,
+					"res", res,
+					"cell", cell,
+				)
+			} else {
+				var feats []json.RawMessage
+				if err := json.Unmarshal(featuresRaw, &feats); err != nil {
+					e.logger.Warn("cache v2: decode features array failed",
+						"layer", q.Layer,
+						"res", res,
+						"cell", cell,
+						"err", err,
+					)
+				} else {
+					t := max(ttl, 0)
+
+					if len(feats) == 0 {
+						if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters),
+							[]string{cellindex.EmptyMarkerID}, t); err != nil {
+							e.logger.Warn("cache v2: cell index set empty failed",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+								"err", err,
+							)
+						} else {
+							e.logger.Debug("cache v2 marked empty cell",
+								"layer", q.Layer,
+								"res", res,
+								"cell", cell,
+							)
+						}
+					} else {
+						featsMap := make(map[string][]byte, len(feats))
+						ids := make([]string, 0, len(feats))
+
+						type minimalFeature struct {
+							ID       json.RawMessage `json:"id"`
+							Geometry json.RawMessage `json:"geometry"`
+						}
+
+						for i, fr := range feats {
+							var f minimalFeature
+							if err := json.Unmarshal(fr, &f); err != nil {
+								e.logger.Warn("cache v2: feature parse failed",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"idx", i,
+									"err", err,
+								)
+								continue
+							}
+
+							var normID string
+
+							if len(bytes.TrimSpace(f.ID)) > 0 {
+								cid, err := geojsonagg.CanonicalIDKey(f.ID)
+								if err != nil {
+									e.logger.Warn("cache v2: invalid feature id, skipping id-based key",
+										"layer", q.Layer,
+										"res", res,
+										"cell", cell,
+										"idx", i,
+										"err", err,
+									)
+								} else {
+									normID = cid
+								}
+							}
+
+							if normID == "" {
+								gh, err := geojsonagg.GeometryHash(f.Geometry, geojsonagg.DefaultGeomPrecision)
+								if err != nil {
+									e.logger.Warn("cache v2: geometry hash failed, skipping feature",
+										"layer", q.Layer,
+										"res", res,
+										"cell", cell,
+										"idx", i,
+										"err", err,
+									)
+									continue
+								}
+								normID = gh
+							}
+
+							if _, exists := featsMap[normID]; !exists {
+								featsMap[normID] = fr
+							}
+							ids = append(ids, normID)
+						}
+
+						if len(featsMap) > 0 && len(ids) > 0 {
+							if err := e.fs.PutFeatures(ctx, q.Layer, featsMap, t); err != nil {
+								e.logger.Warn("cache v2: feature store put failed",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"err", err,
+								)
+							} else if err := e.idx.SetIDs(ctx, q.Layer, res, cell, model.Filters(q.Filters), ids, t); err != nil {
+								e.logger.Warn("cache v2: cell index set failed",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"err", err,
+								)
+							} else {
+								e.logger.Debug("cache v2 filled cell",
+									"layer", q.Layer,
+									"res", res,
+									"cell", cell,
+									"feature_count", len(featsMap),
+									"index_ids", len(ids),
+								)
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+
 	return result{cell: cell, key: key, body: body, err: nil}
 }
 

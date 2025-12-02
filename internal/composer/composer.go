@@ -2,6 +2,7 @@ package composer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -35,6 +36,8 @@ const (
 type ShardPage struct {
 	Body        []byte
 	CacheStatus CacheStatus
+	Features    []json.RawMessage
+	GeomHashes  []string
 }
 
 type HitClass string
@@ -86,7 +89,7 @@ type Negotiation struct {
 	ContentType string
 }
 
-// determines the output format and content type
+// NegotiateFormat determines the output format and content type
 func NegotiateFormat(in NegotiationInput) Negotiation {
 	of := strings.ToLower(strings.TrimSpace(in.OutputFormat))
 	switch {
@@ -156,7 +159,7 @@ func NegotiateFormat(in NegotiationInput) Negotiation {
 }
 
 type AggregatorV2 interface {
-	MergeWithQuery(ctx context.Context, q QueryParams, parts [][]byte) ([]byte, error)
+	MergeWithQuery(ctx context.Context, q QueryParams, pages []ShardPage) ([]byte, error)
 }
 
 type AggregatorV1 = aggregate.Interface
@@ -167,15 +170,19 @@ type Engine struct {
 }
 
 // merges the given parts using the configured aggregator
-func (e Engine) merge(ctx context.Context, q QueryParams, parts [][]byte) ([]byte, error) {
+func (e Engine) merge(ctx context.Context, q QueryParams, pages []ShardPage) ([]byte, error) {
 	if e.V2 != nil {
-		b, err := e.V2.MergeWithQuery(ctx, q, parts)
+		b, err := e.V2.MergeWithQuery(ctx, q, pages)
 		if err != nil {
 			return nil, fmt.Errorf("aggregator v2 merge: %w", err)
 		}
 		return b, nil
 	}
 	if e.V1 != nil {
+		parts := make([][]byte, 0, len(pages))
+		for _, p := range pages {
+			parts = append(parts, p.Body)
+		}
 		b, err := e.V1.Merge(parts)
 		if err != nil {
 			return nil, fmt.Errorf("aggregator v1 merge: %w", err)
@@ -199,7 +206,7 @@ type Result struct {
 	HitClass    HitClass
 }
 
-// merges the given shard pages into a single response
+// Compose merges the given shard pages into a single response
 func Compose(ctx context.Context, eng Engine, req Request) (Result, error) {
 	t0 := time.Now()
 	if len(req.Pages) == 0 {
@@ -219,11 +226,7 @@ func Compose(ctx context.Context, eng Engine, req Request) (Result, error) {
 		DefaultFormat: FormatGeoJSON,
 	})
 
-	parts := make([][]byte, 0, len(req.Pages))
-	for _, p := range req.Pages {
-		parts = append(parts, p.Body)
-	}
-	merged, err := eng.merge(ctx, req.Query, parts)
+	merged, err := eng.merge(ctx, req.Query, req.Pages)
 	if err != nil {
 		return Result{}, fmt.Errorf("aggregate merge: %w", err)
 	}
@@ -244,6 +247,31 @@ func Compose(ctx context.Context, eng Engine, req Request) (Result, error) {
 	default:
 		return Result{}, fmt.Errorf("unsupported format")
 	}
+}
+
+func BuildFeatureCollectionShard(features [][]byte) ([]byte, error) {
+	type fc struct {
+		Type     string            `json:"type"`
+		Features []json.RawMessage `json:"features"`
+	}
+
+	out := fc{
+		Type:     "FeatureCollection",
+		Features: make([]json.RawMessage, 0, len(features)),
+	}
+
+	for i, f := range features {
+		if !json.Valid(f) {
+			return nil, fmt.Errorf("feature %d: invalid JSON", i)
+		}
+		out.Features = append(out.Features, json.RawMessage(f))
+	}
+
+	buf, err := json.Marshal(out)
+	if err != nil {
+		return nil, fmt.Errorf("marshal FeatureCollection: %w", err)
+	}
+	return buf, nil
 }
 
 func formatString(f Format) string {

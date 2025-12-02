@@ -1,3 +1,4 @@
+// Package baseline implements the baseline, non-caching query scenario.
 package baseline
 
 import (

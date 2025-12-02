@@ -1,0 +1,162 @@
+// Package cellindex maintains indexes mapping H3 cells to cached feature identifiers.
+package cellindex
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/keys"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/cache/redisstore"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
+)
+
+const EmptyMarkerID = "__EMPTY__"
+
+type CellIndex interface {
+	GetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters) ([]string, error)
+
+	SetIDs(ctx context.Context, layer string, res int, cell string, filters model.Filters, ids []string, ttl time.Duration) error
+
+	MGetIDs(ctx context.Context, layer string, res int, cells []string, filters model.Filters) (map[string][]string, error)
+
+	DelCells(ctx context.Context, layer string, res int, cells []string, filters model.Filters) error
+}
+
+type redisCellIndex struct {
+	cli *redisstore.Client
+}
+
+func NewRedisIndex(cli *redisstore.Client) CellIndex {
+	return &redisCellIndex{cli: cli}
+}
+
+func (ci *redisCellIndex) GetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cell string,
+	filters model.Filters,
+) ([]string, error) {
+	key := keys.CellIndexKey(layer, res, cell, filters)
+
+	rawMap, err := ci.cli.MGet(ctx, []string{key})
+	if err != nil {
+		return nil, fmt.Errorf("cellindex redis MGET: %w", err)
+	}
+	raw, ok := rawMap[key]
+	if !ok || len(raw) == 0 {
+		return nil, nil
+	}
+
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, fmt.Errorf("cellindex decode ids: %w", err)
+	}
+	return ids, nil
+}
+
+func (ci *redisCellIndex) SetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cell string,
+	filters model.Filters,
+	ids []string,
+	ttl time.Duration,
+) error {
+	key := keys.CellIndexKey(layer, res, cell, filters)
+
+	if len(ids) == 0 {
+		if err := ci.cli.Del(ctx, key); err != nil {
+			return fmt.Errorf("cellindex redis DEL %q: %w", key, err)
+		}
+		return nil
+	}
+
+	uniq := make([]string, 0, len(ids))
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+
+	payload, err := json.Marshal(uniq)
+	if err != nil {
+		return fmt.Errorf("cellindex encode ids: %w", err)
+	}
+
+	if err := ci.cli.Set(ctx, key, payload, ttl); err != nil {
+		return fmt.Errorf("cellindex redis SET %q: %w", key, err)
+	}
+	return nil
+}
+
+func (ci *redisCellIndex) MGetIDs(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) (map[string][]string, error) {
+	if len(cells) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	keysSlice := make([]string, len(cells))
+	for i, cell := range cells {
+		keysSlice[i] = keys.CellIndexKey(layer, res, cell, filters)
+	}
+
+	rawMap, err := ci.cli.MGet(ctx, keysSlice)
+	if err != nil {
+		return nil, fmt.Errorf("cellindex redis MGET %d keys: %w", len(keysSlice), err)
+	}
+	if len(rawMap) == 0 {
+		return map[string][]string{}, nil
+	}
+
+	out := make(map[string][]string, len(rawMap))
+
+	for i, cell := range cells {
+		k := keysSlice[i]
+		raw, ok := rawMap[k]
+		if !ok || len(raw) == 0 {
+			continue // treat as miss
+		}
+		var ids []string
+		if err := json.Unmarshal(raw, &ids); err != nil {
+			// corrupt/invalid entry → treat as miss, but don't fail whole batch
+			continue
+		}
+		out[cell] = ids
+	}
+
+	return out, nil
+}
+
+func (ci *redisCellIndex) DelCells(
+	ctx context.Context,
+	layer string,
+	res int,
+	cells []string,
+	filters model.Filters,
+) error {
+	if len(cells) == 0 {
+		return nil
+	}
+
+	keysToDel := make([]string, 0, len(cells))
+	for _, cell := range cells {
+		keysToDel = append(keysToDel, keys.CellIndexKey(layer, res, cell, filters))
+	}
+
+	if err := ci.cli.Del(ctx, keysToDel...); err != nil {
+		return fmt.Errorf("cellindex redis DEL %d keys: %w", len(keysToDel), err)
+	}
+	return nil
+}

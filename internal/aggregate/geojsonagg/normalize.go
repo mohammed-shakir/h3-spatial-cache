@@ -9,7 +9,7 @@ import (
 	"sort"
 )
 
-// computes a hash of the given GeoJSON geometry
+// GeometryHash computes a hash of the given GeoJSON geometry
 func GeometryHash(geomRaw json.RawMessage, precision int) (string, error) {
 	if len(bytes.TrimSpace(geomRaw)) == 0 || bytes.Equal(geomRaw, []byte("null")) {
 		return "gh:null", nil

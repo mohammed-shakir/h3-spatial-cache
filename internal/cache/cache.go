@@ -1,3 +1,4 @@
+// Package cache implements the core caching engine for H3 cell feature data.
 package cache
 
 import "time"

@@ -15,18 +15,21 @@ type Aggregator struct {
 	Prefetch      int
 }
 
+const DefaultGeomPrecision = 7
+
 func NewAdvanced() *Aggregator {
 	return &Aggregator{
 		EnableDedup:   true,
-		GeomPrecision: 7,
+		GeomPrecision: DefaultGeomPrecision,
 	}
 }
 
-// merges the given request's shards into a single GeoJSON FeatureCollection
+// MergeRequest merges the given request's shards into a single GeoJSON FeatureCollection
 func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 	diag := Diagnostics{}
 	if len(req.Shards) == 0 {
 		out := []byte(`{"type":"FeatureCollection","features":[]}`)
+		diag.HitClass = Miss
 		return out, diag, nil
 	}
 
@@ -48,10 +51,11 @@ func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 	iters := make([]*featIter, 0, len(req.Shards))
 	for si := range req.Shards {
 		it := &featIter{
-			shardIdx: si,
-			features: req.Shards[si].Features,
-			pos:      0,
-			getCmp:   func(f featureParsed) []cmpValue { return extractSortTuple(f, req.Query.Sort) },
+			shardIdx:   si,
+			features:   req.Shards[si].Features,
+			geomHashes: req.Shards[si].GeomHashes,
+			pos:        0,
+			getCmp:     func(f featureParsed) []cmpValue { return extractSortTuple(f, req.Query.Sort) },
 		}
 		iters = append(iters, it)
 	}
@@ -97,23 +101,23 @@ func (a *Aggregator) MergeRequest(req Request) ([]byte, Diagnostics, error) {
 					}
 					seenID[key] = struct{}{}
 				}
-			} else {
-				if fp.geomHash == "" {
-					gh, err := GeometryHash(fp.geomRaw, a.GeomPrecision)
-					if err != nil {
-						return nil, diag, fmt.Errorf("geom hash: %w", err)
-					}
-					fp.geomHash = gh
-				}
-				if _, ok := seenGH[fp.geomHash]; ok {
-					diag.DedupByGH++
-					if f, ok := fp.iter.next(); ok {
-						heap.Push(h, f)
-					}
-					continue
-				}
-				seenGH[fp.geomHash] = struct{}{}
 			}
+
+			if fp.geomHash == "" {
+				gh, err := GeometryHash(fp.geomRaw, a.GeomPrecision)
+				if err != nil {
+					return nil, diag, fmt.Errorf("geom hash: %w", err)
+				}
+				fp.geomHash = gh
+			}
+			if _, ok := seenGH[fp.geomHash]; ok {
+				diag.DedupByGH++
+				if f, ok := fp.iter.next(); ok {
+					heap.Push(h, f)
+				}
+				continue
+			}
+			seenGH[fp.geomHash] = struct{}{}
 		}
 
 		switch {
@@ -156,10 +160,11 @@ type featureParsed struct {
 }
 
 type featIter struct {
-	shardIdx int
-	features []json.RawMessage
-	pos      int
-	getCmp   func(featureParsed) []cmpValue
+	shardIdx   int
+	features   []json.RawMessage
+	geomHashes []string
+	pos        int
+	getCmp     func(featureParsed) []cmpValue
 }
 
 // returns the next featureParsed from the iterator
@@ -182,6 +187,11 @@ func (it *featIter) next() (featureParsed, bool) {
 		localIdx: it.pos - 1,
 		iter:     it,
 	}
+
+	if len(it.geomHashes) > 0 && fp.localIdx < len(it.geomHashes) {
+		fp.geomHash = it.geomHashes[fp.localIdx]
+	}
+
 	fp.sortVals = it.getCmp(fp)
 	return fp, true
 }
@@ -340,7 +350,7 @@ func compareTuples(a, b []cmpValue, keys []SortKey) int {
 	return 0
 }
 
-// merges multiple GeoJSON FeatureCollection parts into a single FeatureCollection
+// Merge merges multiple GeoJSON FeatureCollection parts into a single FeatureCollection
 func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 	req := Request{
 		Query:  Query{},
@@ -409,7 +419,7 @@ func (a *Aggregator) Merge(parts [][]byte) ([]byte, error) {
 func New(dedup bool) *Aggregator {
 	return &Aggregator{
 		EnableDedup:   dedup,
-		GeomPrecision: 7,
+		GeomPrecision: DefaultGeomPrecision,
 	}
 }
 
@@ -433,4 +443,8 @@ func canonicalIDKey(idRaw json.RawMessage) (string, error) {
 	default:
 		return "", fmt.Errorf("id must be string or number (got %T)", v)
 	}
+}
+
+func CanonicalIDKey(idRaw json.RawMessage) (string, error) {
+	return canonicalIDKey(idRaw)
 }

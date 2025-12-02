@@ -1,3 +1,4 @@
+// Package expdecay implements an exponential decay model for hotness scores.
 package expdecay
 
 import (

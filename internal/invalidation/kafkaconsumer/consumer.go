@@ -58,7 +58,7 @@ func New(cfg Config, logger *slog.Logger, c cache.Interface, mapper CellMapper, 
 	}
 }
 
-// consumes invalidation events from kafka and processing them
+// Start consumes invalidation events from kafka and processing them
 func (c *Consumer) Start(ctx context.Context) error {
 	if c.cache == nil || c.mapper == nil {
 		return errors.New("kafkaconsumer: missing dependencies (cache/mapper)")
@@ -146,7 +146,7 @@ func (c *Consumer) Readiness() (bool, []int32) {
 	return true, parts
 }
 
-// process a single invalidation event message
+// ProcessOne process a single invalidation event message
 func (c *Consumer) ProcessOne(ctx context.Context, msg *sarama.ConsumerMessage) error {
 	start := time.Now()
 
