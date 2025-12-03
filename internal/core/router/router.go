@@ -16,6 +16,7 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/config"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/model"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/hitevents"
 )
 
 // QueryHandler receives validated query requests and serves them
@@ -24,7 +25,7 @@ type QueryHandler interface {
 }
 
 // HandleQuery validates input query params and calls the handler
-func HandleQuery(logger *slog.Logger, _ config.Config, h QueryHandler) http.HandlerFunc {
+func HandleQuery(logger *slog.Logger, cfg config.Config, h QueryHandler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
@@ -52,6 +53,16 @@ func HandleQuery(logger *slog.Logger, _ config.Config, h QueryHandler) http.Hand
 
 		if hitRecorded {
 			observability.ObserveSpatialHit(q.Layer, lon, lat)
+
+			if cfg.HitEventsEnabled && q.BBox != nil {
+				hitevents.Publish(hitevents.Event{
+					Layer:    q.Layer,
+					Lon:      lon,
+					Lat:      lat,
+					TS:       time.Now().UTC(),
+					Scenario: cfg.Scenario,
+				})
+			}
 		}
 
 		h.HandleQuery(r.Context(), sw, r, q)

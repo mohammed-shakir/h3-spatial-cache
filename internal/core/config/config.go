@@ -47,6 +47,9 @@ type Config struct {
 	AdaptiveTTLWarm          time.Duration
 	AdaptiveTTLHot           time.Duration
 	Features                 Features
+	HitEventsEnabled         bool
+	HitEventsTopic           string
+	HitEventsBrokers         []string
 }
 
 func FromEnv() Config {
@@ -67,22 +70,24 @@ func FromEnv() Config {
 	ttlDefault := getduration("CACHE_TTL_DEFAULT", 60*time.Second)
 
 	return Config{
-		Addr:                getenv("ADDR", ":8090"),
-		LogLevel:            getenv("LOG_LEVEL", "info"),
-		GeoServerURL:        getenv("GEOSERVER_URL", "http://localhost:8080/geoserver"),
-		RedisAddr:           getenv("REDIS_ADDR", "localhost:6379"),
-		KafkaBrokers:        getenv("KAFKA_BROKERS", "localhost:9092"),
-		H3Res:               res,
-		Scenario:            getenv("SCENARIO", "baseline"),
-		HotThreshold:        getfloat("HOT_THRESHOLD", 10.0),
-		HotHalfLife:         getduration("HOT_HALF_LIFE", time.Minute),
-		H3ResMin:            minRes,
-		H3ResMax:            maxRes,
+		Addr:         getenv("ADDR", ":8090"),
+		LogLevel:     getenv("LOG_LEVEL", "info"),
+		GeoServerURL: getenv("GEOSERVER_URL", "http://localhost:8080/geoserver"),
+		RedisAddr:    getenv("REDIS_ADDR", "localhost:6379"),
+		KafkaBrokers: getenv("KAFKA_BROKERS", "localhost:9092"),
+		H3Res:        res,
+		Scenario:     getenv("SCENARIO", "baseline"),
+		HotThreshold: getfloat("HOT_THRESHOLD", 10.0),
+		HotHalfLife:  getduration("HOT_HALF_LIFE", time.Minute),
+		H3ResMin:     minRes,
+		H3ResMax:     maxRes,
+
 		CacheOpTimeout:      getduration("CACHE_OP_TIMEOUT", 250*time.Millisecond),
 		CacheTTLDefault:     ttlDefault,
 		CacheTTLOvr:         parseDurationMap(getenv("CACHE_TTL_OVERRIDES", "")),
 		CacheFillMaxWorkers: getint("CACHE_FILL_MAX_WORKERS", 8),
 		CacheFillQueue:      getint("CACHE_FILL_QUEUE", 64),
+
 		Invalidation: InvalidationCfg{
 			Enabled: strings.ToLower(getenv("INVALIDATION_ENABLED", "false")) == "true",
 			Driver:  getenv("INVALIDATION_DRIVER", "none"),
@@ -102,6 +107,16 @@ func FromEnv() Config {
 			GMLStreaming:           getbool("FEATURES_GML_STREAMING"),
 			BaselineStreamUpstream: getbool("FEATURES_BASELINE_STREAM_UPSTREAM"),
 		},
+
+		HitEventsEnabled: getbool("HIT_EVENTS_ENABLED"),
+		HitEventsTopic:   getenv("HIT_EVENTS_TOPIC", "spatial-hit-events"),
+		HitEventsBrokers: func() []string {
+			raw := strings.TrimSpace(os.Getenv("HIT_EVENTS_BROKERS"))
+			if raw == "" {
+				raw = getenv("KAFKA_BROKERS", "localhost:9092")
+			}
+			return splitCSV(raw)
+		}(),
 	}
 }
 
@@ -184,6 +199,21 @@ func parseDurationMap(s string) map[string]time.Duration {
 		}
 		if d, err := time.ParseDuration(v); err == nil {
 			out[k] = d
+		}
+	}
+	return out
+}
+
+func splitCSV(s string) []string {
+	out := make([]string, 0)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return out
+	}
+	for part := range strings.SplitSeq(s, ",") {
+		p := strings.TrimSpace(part)
+		if p != "" {
+			out = append(out, p)
 		}
 	}
 	return out

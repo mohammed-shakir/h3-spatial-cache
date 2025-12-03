@@ -25,6 +25,7 @@ import (
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/observability"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/ogc"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/core/server"
+	"github.com/mohammed-shakir/h3-spatial-cache/internal/hitevents"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/logger"
 	mapperh3 "github.com/mohammed-shakir/h3-spatial-cache/internal/mapper/h3"
 	"github.com/mohammed-shakir/h3-spatial-cache/internal/metrics"
@@ -98,6 +99,43 @@ func run() int {
 		"version", Version,
 		"geoserver", cfg.GeoServerURL,
 		"scenario", cfg.Scenario)
+
+	if cfg.HitEventsEnabled {
+		brokers := cfg.HitEventsBrokers
+		if len(brokers) == 0 {
+			src := strings.TrimSpace(cfg.Invalidation.Brokers)
+			if src == "" {
+				src = "localhost:9092"
+			}
+			var fb []string
+			for part := range strings.SplitSeq(src, ",") {
+				p := strings.TrimSpace(part)
+				if p != "" {
+					fb = append(fb, p)
+				}
+			}
+			brokers = fb
+		}
+
+		if len(brokers) == 0 {
+			appLog.Error("hit events: no Kafka brokers configured, disabling publisher")
+		} else {
+			pub, err := hitevents.NewPublisher(brokers, cfg.HitEventsTopic, 10_000)
+			if err != nil {
+				appLog.Error("hit events: failed to init publisher", "err", err)
+			} else {
+				hitevents.InitGlobal(pub)
+				defer func() {
+					if err := hitevents.CloseGlobal(); err != nil {
+						appLog.Error("hit events: close failed", "err", err)
+					}
+				}()
+				appLog.Info("hit events publisher initialized",
+					"topic", cfg.HitEventsTopic,
+					"brokers", brokers)
+			}
+		}
+	}
 
 	httpClient := httpclient.NewOutbound()
 	owsURL := ogc.OWSEndpoint(cfg.GeoServerURL)
