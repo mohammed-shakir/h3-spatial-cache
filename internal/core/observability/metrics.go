@@ -71,6 +71,7 @@ var (
 	kafkaConsumerErrorsTotal       *prometheus.CounterVec
 	adaptiveDecisionsTotal         *prometheus.CounterVec
 	hotnessValueGauge              *prometheus.GaugeVec
+	spatialHitsTotal               *prometheus.CounterVec
 )
 
 var lastLayerInvalidationTS sync.Map
@@ -186,6 +187,14 @@ func initCollectors(r prometheus.Registerer) {
 		[]string{"scenario", "cell_hash"},
 	)
 
+	spatialHitsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "spatial_hits_total",
+			Help: "Count of spatial query hits by approximate location (bbox center).",
+		},
+		[]string{"scenario", "layer", "lon", "lat"},
+	)
+
 	// register all
 	r.MustRegister(
 		spatialReadsTotal, spatialInvalidationTotal, spatialFreshRejectsTotal, invalidationLagSeconds,
@@ -197,6 +206,7 @@ func initCollectors(r prometheus.Registerer) {
 		invEvents, invDeletedKeys, invLatency,
 		kafkaConsumerErrorsTotal,
 		adaptiveDecisionsTotal, hotnessValueGauge,
+		spatialHitsTotal,
 	)
 }
 
@@ -433,4 +443,13 @@ func GetLayerInvalidatedAtUnix(layer string) int64 {
 		}
 	}
 	return 0
+}
+
+func ObserveSpatialHit(layer string, lon, lat float64) {
+	if !enabled.Load() || spatialHitsTotal == nil {
+		return
+	}
+	lonStr := strconv.FormatFloat(lon, 'f', 4, 64)
+	latStr := strconv.FormatFloat(lat, 'f', 4, 64)
+	spatialHitsTotal.WithLabelValues(getScenario(), layer, lonStr, latStr).Inc()
 }

@@ -39,6 +39,21 @@ func HandleQuery(logger *slog.Logger, _ config.Config, h QueryHandler) http.Hand
 			return
 		}
 
+		var lon, lat float64
+		hitRecorded := false
+
+		if q.BBox != nil {
+			lon = (q.BBox.X1 + q.BBox.X2) / 2.0
+			lat = (q.BBox.Y1 + q.BBox.Y2) / 2.0
+			hitRecorded = true
+		} else if q.Polygon != nil {
+			hitRecorded = true
+		}
+
+		if hitRecorded {
+			observability.ObserveSpatialHit(q.Layer, lon, lat)
+		}
+
 		h.HandleQuery(r.Context(), sw, r, q)
 		observability.ObserveHTTP(r.Method, "/query", sw.code, time.Since(start).Seconds())
 	}
