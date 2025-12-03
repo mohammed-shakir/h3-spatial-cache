@@ -118,13 +118,44 @@ func runAll(c cfg) error {
 	}
 
 	for _, sc := range c.Scenarios {
+		if sc == "baseline" {
+			ttl := "baseline"
+			hot := "baseline"
+			inv := "none"
+
+			if len(c.TTLs) > 0 {
+				ttl = c.TTLs[0]
+			}
+			if len(c.Hots) > 0 {
+				hot = c.Hots[0]
+			}
+			if len(c.Invalidations) > 0 {
+				inv = c.Invalidations[0]
+			}
+
+			one := opt{
+				Scenario:     sc,
+				H3Res:        0,
+				TTL:          ttl,
+				HotThreshold: hot,
+				Invalidation: inv,
+			}
+			if err := runOne(c, root, one); err != nil {
+				return err
+			}
+			continue
+		}
+
 		for _, res := range c.H3ResList {
 			for _, ttl := range c.TTLs {
 				for _, hot := range c.Hots {
 					for _, inv := range c.Invalidations {
 						one := opt{
-							Scenario: sc, H3Res: res,
-							TTL: ttl, HotThreshold: hot, Invalidation: inv,
+							Scenario:     sc,
+							H3Res:        res,
+							TTL:          ttl,
+							HotThreshold: hot,
+							Invalidation: inv,
 						}
 						if err := runOne(c, root, one); err != nil {
 							return err
@@ -427,13 +458,46 @@ func clearRedis() error {
 func dryRun(c cfg) error {
 	tstamp := time.Now().UTC().Format("20060102_150405Z")
 	root := filepath.Join(c.OutRoot, tstamp)
+
 	for _, sc := range c.Scenarios {
+		if sc == "baseline" {
+			ttl := "baseline"
+			hot := "baseline"
+			inv := "none"
+
+			if len(c.TTLs) > 0 {
+				ttl = c.TTLs[0]
+			}
+			if len(c.Hots) > 0 {
+				hot = c.Hots[0]
+			}
+			if len(c.Invalidations) > 0 {
+				inv = c.Invalidations[0]
+			}
+
+			dir := bundleDir(root, opt{
+				Scenario:     sc,
+				H3Res:        0,
+				TTL:          ttl,
+				HotThreshold: hot,
+				Invalidation: inv,
+			})
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				return fmt.Errorf("mkdir combo dir: %w", err)
+			}
+			continue
+		}
+
 		for _, res := range c.H3ResList {
 			for _, ttl := range c.TTLs {
 				for _, hot := range c.Hots {
 					for _, inv := range c.Invalidations {
 						dir := bundleDir(root, opt{
-							Scenario: sc, H3Res: res, TTL: ttl, HotThreshold: hot, Invalidation: inv,
+							Scenario:     sc,
+							H3Res:        res,
+							TTL:          ttl,
+							HotThreshold: hot,
+							Invalidation: inv,
 						})
 						if err := os.MkdirAll(dir, 0o750); err != nil {
 							return fmt.Errorf("mkdir combo dir: %w", err)
@@ -443,6 +507,7 @@ func dryRun(c cfg) error {
 			}
 		}
 	}
+
 	fmt.Println("created:", root)
 	return nil
 }
