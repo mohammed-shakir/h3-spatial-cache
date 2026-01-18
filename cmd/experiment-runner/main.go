@@ -33,6 +33,7 @@ type cfg struct {
 	Duration      time.Duration
 	Warmup        time.Duration
 	Concurrency   int
+	RPS           int
 	BBoxes        int
 	OutRoot       string
 	DryRun        bool
@@ -72,6 +73,7 @@ func parseFlags() cfg {
 	flag.DurationVar(&c.Duration, "duration", 2*time.Minute, "Per-combo load duration")
 	flag.DurationVar(&c.Warmup, "warmup", 30*time.Second, "Warm-up duration before measurement (0 disables)")
 	flag.IntVar(&c.Concurrency, "concurrency", 32, "Loadgen concurrency")
+	flag.IntVar(&c.RPS, "rps", 0, "Target global requests/sec for loadgen (0 = closed-loop/as-fast-as-possible)")
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
 	flag.Float64Var(&c.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")
 	flag.Float64Var(&c.ZipfV, "zipf-v", 1.0, "Zipf parameter v (>=1)")
@@ -270,6 +272,9 @@ func runOne(c cfg, root string, o opt, campaignSeed int64) error {
 			"-append-ts=false",
 			"-seed", fmt.Sprintf("%d", seed),
 		}
+		if c.RPS > 0 {
+			warmArgs = append(warmArgs, "-rps", fmt.Sprintf("%d", c.RPS))
+		}
 		if strings.TrimSpace(c.CentroidsPath) != "" {
 			warmArgs = append(warmArgs, "-centroids", c.CentroidsPath)
 		}
@@ -301,6 +306,10 @@ func runOne(c cfg, root string, o opt, campaignSeed int64) error {
 		"-out", outPrefix,
 		"-append-ts=false",
 		"-seed", fmt.Sprintf("%d", seed),
+	}
+
+	if c.RPS > 0 {
+		args = append(args, "-rps", fmt.Sprintf("%d", c.RPS))
 	}
 
 	if strings.TrimSpace(c.CentroidsPath) != "" {

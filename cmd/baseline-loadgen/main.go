@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 	LayerName       string
 	Concurrency     int
 	Duration        time.Duration
+	TargetRPS       int
 	ZipfS           float64
 	ZipfV           float64
 	BBoxCount       int
@@ -45,6 +47,7 @@ func loadConfig() Config {
 	flag.StringVar(&cfg.LayerName, "layer", "demo:NR_polygon", "Layer (WFS typeNames)")
 	flag.IntVar(&cfg.Concurrency, "concurrency", 32, "Concurrent workers")
 	flag.DurationVar(&cfg.Duration, "duration", 60*time.Second, "Test duration")
+	flag.IntVar(&cfg.TargetRPS, "rps", 0, "Target global requests/sec (0 = closed-loop/as-fast-as-possible)")
 	flag.Float64Var(&cfg.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")
 	flag.Float64Var(&cfg.ZipfV, "zipf-v", 1.0, "Zipf parameter v (>=1)")
 	flag.IntVar(&cfg.BBoxCount, "bboxes", 128, "Distinct BBOXes in pool")
@@ -195,23 +198,28 @@ type sample struct {
 }
 
 type summary struct {
-	StartTime     time.Time `json:"start"`
-	EndTime       time.Time `json:"end"`
-	DurationSec   float64   `json:"duration_sec"`
-	TotalRequests int64     `json:"total"`
-	SuccessCount  int64     `json:"success"`
-	ErrorCount    int64     `json:"errors"`
-	ThroughputRPS float64   `json:"throughput_rps"`
-	P50Ms         float64   `json:"p50_ms"`
-	P95Ms         float64   `json:"p95_ms"`
-	P99Ms         float64   `json:"p99_ms"`
-	Concurrency   int       `json:"concurrency"`
-	ZipfS         float64   `json:"zipf_s"`
-	ZipfV         float64   `json:"zipf_v"`
-	BBoxes        int       `json:"bboxes"`
-	TargetURL     string    `json:"target"`
-	LayerName     string    `json:"layer"`
-	Seed          int64     `json:"seed"`
+	StartTime             time.Time `json:"start"`
+	EndTime               time.Time `json:"end"`
+	DurationSec           float64   `json:"duration_sec"`
+	TotalRequests         int64     `json:"total"`
+	SuccessCount          int64     `json:"success"`
+	ErrorCount            int64     `json:"errors"`
+	ThroughputRPS         float64   `json:"throughput_rps"`
+	TargetRPS             int       `json:"target_rps"`
+	AchievedToTargetRatio float64   `json:"achieved_to_target_ratio"`
+	MissedTokens          uint64    `json:"missed_tokens"`
+	MaxBacklog            uint64    `json:"max_backlog"`
+	TokenBuffer           int       `json:"token_buffer"`
+	P50Ms                 float64   `json:"p50_ms"`
+	P95Ms                 float64   `json:"p95_ms"`
+	P99Ms                 float64   `json:"p99_ms"`
+	Concurrency           int       `json:"concurrency"`
+	ZipfS                 float64   `json:"zipf_s"`
+	ZipfV                 float64   `json:"zipf_v"`
+	BBoxes                int       `json:"bboxes"`
+	TargetURL             string    `json:"target"`
+	LayerName             string    `json:"layer"`
+	Seed                  int64     `json:"seed"`
 }
 
 type aggregatedResult struct {
@@ -285,6 +293,70 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Duration)
 	defer cancel()
 
+	var (
+		tokenCh      <-chan struct{}
+		missedTokens uint64
+		maxBacklog   uint64
+		tokenBuf     int
+	)
+	if cfg.TargetRPS > 0 {
+		// Small buffer to absorb jitter without hiding sustained overload.
+		tokenBuf = min(max(cfg.Concurrency*16, 1), 1_000_000)
+
+		tokens := make(chan struct{}, tokenBuf)
+		tokenCh = tokens
+
+		interval := time.Duration(float64(time.Second) / float64(cfg.TargetRPS))
+		if interval <= 0 {
+			interval = time.Nanosecond
+		}
+
+		go func() {
+			next := time.Now()
+			for {
+				// schedule next emission time (attempts to keep cadence stable)
+				next = next.Add(interval)
+
+				// sleep until next (or stop if ctx done)
+				if d := time.Until(next); d > 0 {
+					t := time.NewTimer(d)
+					select {
+					case <-ctx.Done():
+						t.Stop()
+						close(tokens)
+						return
+					case <-t.C:
+					}
+				}
+
+				select {
+				case <-ctx.Done():
+					close(tokens)
+					return
+				default:
+				}
+
+				// Non-blocking send: if buffer is full, we drop and count as missed.
+				select {
+				case tokens <- struct{}{}:
+					l := len(tokens)
+					// Track max backlog (CAS loop).
+					for {
+						cur := atomic.LoadUint64(&maxBacklog)
+						if uint64(l) <= cur {
+							break
+						}
+						if atomic.CompareAndSwapUint64(&maxBacklog, cur, uint64(l)) {
+							break
+						}
+					}
+				default:
+					atomic.AddUint64(&missedTokens, 1)
+				}
+			}
+		}()
+	}
+
 	// Prepare output files
 	csvPath := prefix + "_samples.csv"
 	jsonPath := prefix + "_summary.json"
@@ -330,6 +402,7 @@ func main() {
 	startTime := time.Now()
 	log.Printf("loadgen start target=%s layer=%s dur=%s conc=%d zipf(s=%.2f,v=%.2f) bboxes=%d centroids=%s",
 		cfg.TargetURL, cfg.LayerName, cfg.Duration, cfg.Concurrency, cfg.ZipfS, cfg.ZipfV, cfg.BBoxCount, cfg.CentroidFile)
+	log.Printf("arrival: target_rps=%d (0=closed-loop)", cfg.TargetRPS)
 
 	var wg sync.WaitGroup
 	wg.Add(cfg.Concurrency)
@@ -345,6 +418,17 @@ func main() {
 				case <-ctx.Done():
 					return
 				default:
+				}
+
+				if tokenCh != nil {
+					select {
+					case <-ctx.Done():
+						return
+					case _, ok := <-tokenCh:
+						if !ok {
+							return
+						}
+					}
 				}
 
 				v := zipfDist.Uint64()
@@ -422,16 +506,26 @@ func main() {
 		SuccessCount:  aggResult.success,
 		ErrorCount:    aggResult.errors,
 		ThroughputRPS: float64(aggResult.total) / elapsed,
-		P50Ms:         p50,
-		P95Ms:         p95,
-		P99Ms:         p99,
-		Concurrency:   cfg.Concurrency,
-		ZipfS:         cfg.ZipfS,
-		ZipfV:         cfg.ZipfV,
-		BBoxes:        cfg.BBoxCount,
-		TargetURL:     cfg.TargetURL,
-		LayerName:     cfg.LayerName,
-		Seed:          seedUsed,
+		TargetRPS:     cfg.TargetRPS,
+		AchievedToTargetRatio: func() float64 {
+			if cfg.TargetRPS <= 0 {
+				return 0
+			}
+			return (float64(aggResult.total) / elapsed) / float64(cfg.TargetRPS)
+		}(),
+		MissedTokens: atomic.LoadUint64(&missedTokens),
+		MaxBacklog:   atomic.LoadUint64(&maxBacklog),
+		TokenBuffer:  tokenBuf,
+		P50Ms:        p50,
+		P95Ms:        p95,
+		P99Ms:        p99,
+		Concurrency:  cfg.Concurrency,
+		ZipfS:        cfg.ZipfS,
+		ZipfV:        cfg.ZipfV,
+		BBoxes:       cfg.BBoxCount,
+		TargetURL:    cfg.TargetURL,
+		LayerName:    cfg.LayerName,
+		Seed:         seedUsed,
 	}
 
 	jsonFile, err := os.Create(filepath.Clean(jsonPath))

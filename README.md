@@ -192,6 +192,26 @@ docker compose -f deploy/compose/docker-compose.yml up app
 
 ### Load Testing
 
+Warm it up first:
+
+```bash
+go run ./cmd/baseline-loadgen \
+-target http://localhost:8090/query \
+-layer demo:NR_polygon \
+-duration 10s \
+-concurrency 32 \
+-rps 800 \
+-zipf-s 1.3 \
+-zipf-v 1.0 \
+-bboxes 1024 \
+-timeout 5s \
+-centroids data/NR_polygon_centroids.csv \
+-seed 123456789 \
+-out results/baseline_warmup \
+-append-ts=true \
+-ts-format=iso
+```
+
 Then run the load generator:
 
 ```bash
@@ -200,6 +220,7 @@ go run ./cmd/baseline-loadgen \
   -layer demo:NR_polygon \
   -duration 10s \
   -concurrency 32 \
+  -rps 800 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
@@ -214,31 +235,6 @@ go run ./cmd/baseline-loadgen \
 (If you do not have the data/ folder, remove the `-centroids` flag to use
 random bboxes).
 
-If you want to warm it up first:
-
-```bash
-go run ./cmd/baseline-loadgen \
-  -target http://localhost:8090/query \
-  -layer demo:NR_polygon \
-  -duration 10s \
-  -concurrency 32 \
-  -zipf-s 1.3 \
-  -zipf-v 1.0 \
-  -bboxes 1024 \
-  -timeout 5s \
-  -centroids data/NR_polygon_centroids.csv \
-  -seed 123456789 \
-  -out results/baseline_warmup \
-  -append-ts=true \
-  -ts-format=iso
-```
-
-or use default parameters:
-
-```bash
-go run ./cmd/baseline-loadgen -out results/baseline
-```
-
 Or run the experiment-runner to do multiple runs with different scenarios.
 You can run the full matrix directly:
 
@@ -250,6 +246,7 @@ go run ./cmd/experiment-runner \
   -warmup 10s \
   -duration 20s \
   -concurrency 32 \
+  -rps 800 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
@@ -274,6 +271,7 @@ go run ./cmd/experiment-runner \
   -warmup 10s \
   -duration 20s \
   -concurrency 32 \
+  -rps 800 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
