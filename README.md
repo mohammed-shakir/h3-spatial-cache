@@ -248,7 +248,7 @@ go run ./cmd/experiment-runner \
   -reps 3 \
   -concurrency 32 \
   -rps 800 \
-  -zipf-s 1.0,1.1,1.2,1.3,1.4
+  -zipf-s 1.0,1.1,1.2,1.3,1.4 \
   -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
