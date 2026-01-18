@@ -245,6 +245,7 @@ go run ./cmd/experiment-runner \
   -layer demo:NR_polygon \
   -warmup 10s \
   -duration 20s \
+  -reps 1 \
   -concurrency 32 \
   -rps 800 \
   -zipf-s 1.3 \
@@ -270,6 +271,7 @@ go run ./cmd/experiment-runner \
   -layer demo:NR_polygon \
   -warmup 10s \
   -duration 20s \
+  -reps 1 \
   -concurrency 32 \
   -rps 800 \
   -zipf-s 1.3 \

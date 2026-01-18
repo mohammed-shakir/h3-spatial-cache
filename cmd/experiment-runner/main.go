@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -32,6 +33,7 @@ type cfg struct {
 	Layer         string
 	Duration      time.Duration
 	Warmup        time.Duration
+	Reps          int
 	Concurrency   int
 	RPS           int
 	BBoxes        int
@@ -72,6 +74,7 @@ func parseFlags() cfg {
 	flag.StringVar(&c.Layer, "layer", "demo:NR_polygon", "Layer (WFS typeNames)")
 	flag.DurationVar(&c.Duration, "duration", 2*time.Minute, "Per-combo load duration")
 	flag.DurationVar(&c.Warmup, "warmup", 30*time.Second, "Warm-up duration before measurement (0 disables)")
+	flag.IntVar(&c.Reps, "reps", 5, "Repetitions per combo (creates rep01/rep02/... subfolders)")
 	flag.IntVar(&c.Concurrency, "concurrency", 32, "Loadgen concurrency")
 	flag.IntVar(&c.RPS, "rps", 0, "Target global requests/sec for loadgen (0 = closed-loop/as-fast-as-possible)")
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
@@ -135,6 +138,8 @@ func runAll(c cfg) error {
 		c.SeedMode = "combo"
 	}
 
+	reps := max(c.Reps, 1)
+
 	for _, sc := range c.Scenarios {
 		if sc == "baseline" {
 			ttl := "baseline"
@@ -158,8 +163,10 @@ func runAll(c cfg) error {
 				HotThreshold: hot,
 				Invalidation: inv,
 			}
-			if err := runOne(c, root, one, campaignSeed); err != nil {
-				return err
+			for rep := 1; rep <= reps; rep++ {
+				if err := runOne(c, root, one, campaignSeed, rep); err != nil {
+					return err
+				}
 			}
 			continue
 		}
@@ -175,8 +182,10 @@ func runAll(c cfg) error {
 							HotThreshold: hot,
 							Invalidation: inv,
 						}
-						if err := runOne(c, root, one, campaignSeed); err != nil {
-							return err
+						for rep := 1; rep <= reps; rep++ {
+							if err := runOne(c, root, one, campaignSeed, rep); err != nil {
+								return err
+							}
 						}
 					}
 				}
@@ -196,10 +205,14 @@ func sanitize(s string) string {
 	return strings.NewReplacer(":", "", "/", "-", ",", "_").Replace(s)
 }
 
-func runOne(c cfg, root string, o opt, campaignSeed int64) error {
-	dir := bundleDir(root, o)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+func runOne(c cfg, root string, o opt, campaignSeed int64, rep int) error {
+	baseDir := bundleDir(root, o)
+	if err := os.MkdirAll(baseDir, 0o750); err != nil {
 		return fmt.Errorf("mkdir combo dir: %w", err)
+	}
+	dir := filepath.Join(baseDir, fmt.Sprintf("rep%02d", rep))
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("mkdir rep dir: %w", err)
 	}
 	if c.DryRun {
 		return nil
@@ -220,6 +233,24 @@ func runOne(c cfg, root string, o opt, campaignSeed int64) error {
 	case "kafka":
 		env = set(env, "INVALIDATION_ENABLED", "true")
 		env = set(env, "INVALIDATION_DRIVER", "kafka")
+
+		topic := strings.TrimSpace(os.Getenv("KAFKA_TOPIC"))
+		if topic == "" {
+			topic = "spatial-invalidation"
+		}
+		brokers := strings.TrimSpace(os.Getenv("KAFKA_BROKERS"))
+		if brokers == "" {
+			brokers = "localhost:29092"
+		}
+		group := strings.TrimSpace(os.Getenv("KAFKA_GROUP_ID"))
+		if group == "" {
+			group = "cache-invalidator"
+		}
+
+		env = set(env, "KAFKA_TOPIC", topic)
+		env = set(env, "KAFKA_BROKERS", brokers)
+		env = set(env, "KAFKA_GROUP_ID", group)
+
 	default:
 		env = set(env, "INVALIDATION_ENABLED", "false")
 		env = set(env, "INVALIDATION_DRIVER", "none")
@@ -287,10 +318,18 @@ func runOne(c cfg, root string, o opt, campaignSeed int64) error {
 		}
 	}
 
-	go func() {
-		f := filepath.Join(dir, "docker_stats.csv")
-		_ = runCaptureStats(f, "postgis", "geoserver")
-	}()
+	statsPath := filepath.Join(dir, "docker_stats.csv")
+	ctxStats, cancelStats := context.WithCancel(context.Background())
+	statsCmd, err := runCaptureStats(ctxStats, statsPath, "postgis", "geoserver")
+	if err != nil {
+		log.Printf("WARN: capture-stats disabled: %v", err)
+		cancelStats()
+	} else {
+		defer func() {
+			cancelStats()
+			_ = statsCmd.Wait()
+		}()
+	}
 
 	outPrefix := filepath.Join(dir, o.Scenario)
 
@@ -374,19 +413,22 @@ func mustFile(path string) *os.File {
 	return f
 }
 
-func runCaptureStats(path string, containers ...string) error {
+func runCaptureStats(ctx context.Context, path string, containers ...string) (*exec.Cmd, error) {
 	if len(containers) == 0 {
-		return nil
+		return nil, nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	args := append([]string{"./scripts/capture-stats.sh"}, containers...)
 	// #nosec G204 -- trusted local script; argv passed directly to exec without shell interpolation.
-	cmd := exec.Command("bash", args...)
+	cmd := exec.CommandContext(ctx, "bash", args...)
 	cmd.Stdout = mustFile(path)
 	cmd.Stderr = mustFile(strings.TrimSuffix(path, ".csv") + ".log")
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("capture-stats start: %w", err)
+		return nil, fmt.Errorf("capture-stats start: %w", err)
 	}
-	return nil
+	return cmd, nil
 }
 
 type oneQuery struct {
@@ -397,34 +439,41 @@ type oneQuery struct {
 
 func queryPrometheus(base, dir string, o opt, start, end time.Time) error {
 	base = strings.TrimRight(base, "/")
-	window := end.Sub(start).Round(time.Second)
+
+	windowSeconds := max(int(end.Sub(start).Seconds()), 1)
+
 	esc := urlpkg.QueryEscape
+	// Prometheus accepts Unix timestamps in seconds with optional decimals for sub-second precision. :contentReference[oaicite:2]{index=2}
+	evalTime := fmt.Sprintf("%.3f", float64(end.UnixNano())/1e9)
+	mkURL := func(expr string) string {
+		return base + "/api/v1/query?time=" + esc(evalTime) + "&query=" + esc(expr)
+	}
 
 	sc := o.Scenario
 
-	qP50 := fmt.Sprintf(`histogram_quantile(0.50, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, int(window.Seconds()))
-	qP95 := fmt.Sprintf(`histogram_quantile(0.95, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, int(window.Seconds()))
-	qP99 := fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, int(window.Seconds()))
+	qP50 := fmt.Sprintf(`histogram_quantile(0.50, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, windowSeconds)
+	qP95 := fmt.Sprintf(`histogram_quantile(0.95, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, windowSeconds)
+	qP99 := fmt.Sprintf(`histogram_quantile(0.99, sum by (le) (increase(spatial_response_duration_seconds_bucket{scenario="%s"}[%ds])))`, sc, windowSeconds)
 
 	qHit := fmt.Sprintf(`(
   sum(increase(spatial_response_total{hit_class=~"full_hit|partial_hit",scenario="%s"}[%ds]))
-) / clamp_min(sum(increase(spatial_response_total{scenario="%s"}[%ds])), 1e-9)`, sc, int(window.Seconds()), sc, int(window.Seconds()))
+) / clamp_min(sum(increase(spatial_response_total{scenario="%s"}[%ds])), 1e-9)`, sc, windowSeconds, sc, windowSeconds)
 
 	qStale := fmt.Sprintf(`(
   sum(increase(spatial_reads_total{stale="true",scenario="%s"}[%ds]))
-) / clamp_min(sum(increase(spatial_reads_total{scenario="%s"}[%ds])), 1e-9)`, sc, int(window.Seconds()), sc, int(window.Seconds()))
+) / clamp_min(sum(increase(spatial_reads_total{scenario="%s"}[%ds])), 1e-9)`, sc, windowSeconds, sc, windowSeconds)
 
-	qRedisMem := `sum(redis_memory_used_bytes)`
-	qPgCPU := `sum by (instance) (rate(process_cpu_seconds_total{job=~"postgres.*"}[1m]))`
+	qRedisMem := fmt.Sprintf(`max_over_time(sum(redis_memory_used_bytes)[%ds:])`, windowSeconds)
+	qPgCPU := fmt.Sprintf(`avg_over_time(sum by (instance) (rate(process_cpu_seconds_total{job=~"postgres.*"}[1m]))[%ds:])`, windowSeconds)
 
 	queries := []oneQuery{
-		{"p50_latency_s", qP50, base + "/api/v1/query?query=" + esc(qP50)},
-		{"p95_latency_s", qP95, base + "/api/v1/query?query=" + esc(qP95)},
-		{"p99_latency_s", qP99, base + "/api/v1/query?query=" + esc(qP99)},
-		{"hit_ratio", qHit, base + "/api/v1/query?query=" + esc(qHit)},
-		{"staleness_ratio", qStale, base + "/api/v1/query?query=" + esc(qStale)},
-		{"redis_memory_used_bytes_sum", qRedisMem, base + "/api/v1/query?query=" + esc(qRedisMem)},
-		{"postgres_cpu_rate", qPgCPU, base + "/api/v1/query?query=" + esc(qPgCPU)},
+		{"p50_latency_s", qP50, mkURL(qP50)},
+		{"p95_latency_s", qP95, mkURL(qP95)},
+		{"p99_latency_s", qP99, mkURL(qP99)},
+		{"hit_ratio", qHit, mkURL(qHit)},
+		{"staleness_ratio", qStale, mkURL(qStale)},
+		{"redis_memory_used_bytes_sum", qRedisMem, mkURL(qRedisMem)},
+		{"postgres_cpu_rate", qPgCPU, mkURL(qPgCPU)},
 	}
 	b, _ := json.MarshalIndent(queries, "", "  ")
 	_ = os.WriteFile(filepath.Join(dir, "promql_queries.json"), b, 0o600)
@@ -539,6 +588,8 @@ func dryRun(c cfg) error {
 	tstamp := time.Now().UTC().Format("20060102_150405Z")
 	root := filepath.Join(c.OutRoot, tstamp)
 
+	reps := max(c.Reps, 1)
+
 	for _, sc := range c.Scenarios {
 		if sc == "baseline" {
 			ttl := "baseline"
@@ -565,6 +616,12 @@ func dryRun(c cfg) error {
 			if err := os.MkdirAll(dir, 0o750); err != nil {
 				return fmt.Errorf("mkdir combo dir: %w", err)
 			}
+			for rep := 1; rep <= reps; rep++ {
+				repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
+				if err := os.MkdirAll(repDir, 0o750); err != nil {
+					return fmt.Errorf("mkdir rep dir: %w", err)
+				}
+			}
 			continue
 		}
 
@@ -581,6 +638,12 @@ func dryRun(c cfg) error {
 						})
 						if err := os.MkdirAll(dir, 0o750); err != nil {
 							return fmt.Errorf("mkdir combo dir: %w", err)
+						}
+						for rep := 1; rep <= reps; rep++ {
+							repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
+							if err := os.MkdirAll(repDir, 0o750); err != nil {
+								return fmt.Errorf("mkdir rep dir: %w", err)
+							}
 						}
 					}
 				}

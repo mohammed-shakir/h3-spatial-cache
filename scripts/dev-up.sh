@@ -13,7 +13,7 @@ set +a
 
 # Default values
 : "${GEOSERVER_PORT:=8080}"
-: "${KAFKA_TOPIC:=spatial-updates}"
+: "${KAFKA_TOPIC:=spatial-invalidation}"
 : "${KAFKA_PARTITIONS:=6}"
 : "${KAFKA_REPLICATION_FACTOR:=1}"
 : "${POSTGRES_DB:=gis}"

@@ -23,7 +23,7 @@ func FromEnv() Config {
 	}
 	topic := os.Getenv("KAFKA_TOPIC")
 	if topic == "" {
-		topic = "spatial-updates"
+		topic = "spatial-invalidation"
 	}
 	group := os.Getenv("KAFKA_GROUP_ID")
 	if group == "" {

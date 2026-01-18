@@ -106,6 +106,10 @@ services:
       GEOSERVER_URL: http://geoserver:8080/geoserver
       REDIS_ADDR: redis:6379
       KAFKA_BROKERS: kafka:9092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-spatial-invalidation}
+      KAFKA_GROUP_ID: ${KAFKA_GROUP_ID:-cache-invalidator}
+      INVALIDATION_ENABLED: ${INVALIDATION_ENABLED:-false}
+      INVALIDATION_DRIVER: ${INVALIDATION_DRIVER:-none}
       LOG_LEVEL: ${LOG_LEVEL:-debug}
       # Metrics on a side HTTP server inside the container
       METRICS_ENABLED: "true"
