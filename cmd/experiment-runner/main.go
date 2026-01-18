@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ type opt struct {
 	TTL          string
 	HotThreshold string
 	Invalidation string
+	ZipfS        float64
 }
 
 type cfg struct {
@@ -46,7 +48,7 @@ type cfg struct {
 	Invalidations []string
 	CentroidsPath string
 	ClearCache    bool
-	ZipfS         float64
+	ZipfSList     []float64
 	ZipfV         float64
 	Seed          int64
 	SeedMode      string
@@ -68,6 +70,7 @@ func main() {
 func parseFlags() cfg {
 	var c cfg
 	var scenarios, h3res, ttls, hots, invs string
+	var zipfS string
 
 	flag.StringVar(&c.PromURL, "prom", "http://localhost:9090", "Prometheus base URL")
 	flag.StringVar(&c.TargetURL, "target", "http://localhost:8090/query", "Middleware /query URL")
@@ -78,7 +81,7 @@ func parseFlags() cfg {
 	flag.IntVar(&c.Concurrency, "concurrency", 32, "Loadgen concurrency")
 	flag.IntVar(&c.RPS, "rps", 0, "Target global requests/sec for loadgen (0 = closed-loop/as-fast-as-possible)")
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
-	flag.Float64Var(&c.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")
+	flag.StringVar(&zipfS, "zipf-s", "1.3", "Zipf parameter s values (CSV). Example: 1.0,1.2,1.4 (quote if spaces)")
 	flag.Float64Var(&c.ZipfV, "zipf-v", 1.0, "Zipf parameter v (>=1)")
 	flag.StringVar(&c.OutRoot, "out", "results", "Output root dir")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Only create directory tree; no services")
@@ -95,6 +98,19 @@ func parseFlags() cfg {
 	flag.Parse()
 
 	c.Scenarios = splitCSV(scenarios)
+
+	zipfParts := splitCSV(zipfS)
+	if len(zipfParts) == 0 {
+		zipfParts = []string{"1.3"}
+	}
+	for _, p := range zipfParts {
+		f, err := strconv.ParseFloat(p, 64)
+		if err != nil {
+			log.Fatalf("invalid -zipf-s value %q (expected CSV of floats): %v", p, err)
+		}
+		c.ZipfSList = append(c.ZipfSList, f)
+	}
+
 	for _, s := range splitCSV(h3res) {
 		var n int
 		if _, err := fmt.Sscanf(s, "%d", &n); err == nil {
@@ -141,50 +157,54 @@ func runAll(c cfg) error {
 	reps := max(c.Reps, 1)
 
 	for _, sc := range c.Scenarios {
-		if sc == "baseline" {
-			ttl := "baseline"
-			hot := "baseline"
-			inv := "none"
+		for _, zipfS := range c.ZipfSList {
+			if sc == "baseline" {
+				ttl := "baseline"
+				hot := "baseline"
+				inv := "none"
 
-			if len(c.TTLs) > 0 {
-				ttl = c.TTLs[0]
-			}
-			if len(c.Hots) > 0 {
-				hot = c.Hots[0]
-			}
-			if len(c.Invalidations) > 0 {
-				inv = c.Invalidations[0]
-			}
-
-			one := opt{
-				Scenario:     sc,
-				H3Res:        0,
-				TTL:          ttl,
-				HotThreshold: hot,
-				Invalidation: inv,
-			}
-			for rep := 1; rep <= reps; rep++ {
-				if err := runOne(c, root, one, campaignSeed, rep); err != nil {
-					return err
+				if len(c.TTLs) > 0 {
+					ttl = c.TTLs[0]
 				}
-			}
-			continue
-		}
+				if len(c.Hots) > 0 {
+					hot = c.Hots[0]
+				}
+				if len(c.Invalidations) > 0 {
+					inv = c.Invalidations[0]
+				}
 
-		for _, res := range c.H3ResList {
-			for _, ttl := range c.TTLs {
-				for _, hot := range c.Hots {
-					for _, inv := range c.Invalidations {
-						one := opt{
-							Scenario:     sc,
-							H3Res:        res,
-							TTL:          ttl,
-							HotThreshold: hot,
-							Invalidation: inv,
-						}
-						for rep := 1; rep <= reps; rep++ {
-							if err := runOne(c, root, one, campaignSeed, rep); err != nil {
-								return err
+				one := opt{
+					Scenario:     sc,
+					H3Res:        0,
+					TTL:          ttl,
+					HotThreshold: hot,
+					Invalidation: inv,
+					ZipfS:        zipfS,
+				}
+				for rep := 1; rep <= reps; rep++ {
+					if err := runOne(c, root, one, campaignSeed, rep); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+
+			for _, res := range c.H3ResList {
+				for _, ttl := range c.TTLs {
+					for _, hot := range c.Hots {
+						for _, inv := range c.Invalidations {
+							one := opt{
+								Scenario:     sc,
+								H3Res:        res,
+								TTL:          ttl,
+								HotThreshold: hot,
+								Invalidation: inv,
+								ZipfS:        zipfS,
+							}
+							for rep := 1; rep <= reps; rep++ {
+								if err := runOne(c, root, one, campaignSeed, rep); err != nil {
+									return err
+								}
 							}
 						}
 					}
@@ -197,8 +217,15 @@ func runAll(c cfg) error {
 
 func bundleDir(root string, o opt) string {
 	return filepath.Join(root,
-		fmt.Sprintf("%s-r%d-ttl%s-hot%s-inv%s",
-			o.Scenario, o.H3Res, sanitize(o.TTL), sanitize(o.HotThreshold), o.Invalidation))
+		fmt.Sprintf("%s-r%d-ttl%s-hot%s-inv%s-zipfs%s",
+			o.Scenario,
+			o.H3Res,
+			sanitize(o.TTL),
+			sanitize(o.HotThreshold),
+			o.Invalidation,
+			sanitize(strconv.FormatFloat(o.ZipfS, 'f', -1, 64)),
+		),
+	)
 }
 
 func sanitize(s string) string {
@@ -296,7 +323,7 @@ func runOne(c cfg, root string, o opt, campaignSeed int64, rep int) error {
 			"-layer", c.Layer,
 			"-concurrency", fmt.Sprintf("%d", c.Concurrency),
 			"-duration", c.Warmup.String(),
-			"-zipf-s", fmt.Sprintf("%g", c.ZipfS),
+			"-zipf-s", fmt.Sprintf("%g", o.ZipfS),
 			"-zipf-v", fmt.Sprintf("%g", c.ZipfV),
 			"-bboxes", fmt.Sprintf("%d", c.BBoxes),
 			"-out", warmPrefix,
@@ -339,7 +366,7 @@ func runOne(c cfg, root string, o opt, campaignSeed int64, rep int) error {
 		"-layer", c.Layer,
 		"-concurrency", fmt.Sprintf("%d", c.Concurrency),
 		"-duration", c.Duration.String(),
-		"-zipf-s", fmt.Sprintf("%g", c.ZipfS),
+		"-zipf-s", fmt.Sprintf("%g", o.ZipfS),
 		"-zipf-v", fmt.Sprintf("%g", c.ZipfV),
 		"-bboxes", fmt.Sprintf("%d", c.BBoxes),
 		"-out", outPrefix,
@@ -563,13 +590,14 @@ func clearRedis() error {
 
 func deriveComboSeed(campaignSeed int64, o opt) int64 {
 	h := fnv.New64a()
-	_, _ = fmt.Fprintf(h, "%d|%s|%d|%s|%s|%s",
+	_, _ = fmt.Fprintf(h, "%d|%s|%d|%s|%s|%s|%s",
 		campaignSeed,
 		o.Scenario,
 		o.H3Res,
 		o.TTL,
 		o.HotThreshold,
 		o.Invalidation,
+		strconv.FormatFloat(o.ZipfS, 'f', -1, 64),
 	)
 
 	sum := h.Sum64()
@@ -591,58 +619,62 @@ func dryRun(c cfg) error {
 	reps := max(c.Reps, 1)
 
 	for _, sc := range c.Scenarios {
-		if sc == "baseline" {
-			ttl := "baseline"
-			hot := "baseline"
-			inv := "none"
+		for _, zipfS := range c.ZipfSList {
+			if sc == "baseline" {
+				ttl := "baseline"
+				hot := "baseline"
+				inv := "none"
 
-			if len(c.TTLs) > 0 {
-				ttl = c.TTLs[0]
-			}
-			if len(c.Hots) > 0 {
-				hot = c.Hots[0]
-			}
-			if len(c.Invalidations) > 0 {
-				inv = c.Invalidations[0]
-			}
-
-			dir := bundleDir(root, opt{
-				Scenario:     sc,
-				H3Res:        0,
-				TTL:          ttl,
-				HotThreshold: hot,
-				Invalidation: inv,
-			})
-			if err := os.MkdirAll(dir, 0o750); err != nil {
-				return fmt.Errorf("mkdir combo dir: %w", err)
-			}
-			for rep := 1; rep <= reps; rep++ {
-				repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
-				if err := os.MkdirAll(repDir, 0o750); err != nil {
-					return fmt.Errorf("mkdir rep dir: %w", err)
+				if len(c.TTLs) > 0 {
+					ttl = c.TTLs[0]
 				}
-			}
-			continue
-		}
+				if len(c.Hots) > 0 {
+					hot = c.Hots[0]
+				}
+				if len(c.Invalidations) > 0 {
+					inv = c.Invalidations[0]
+				}
 
-		for _, res := range c.H3ResList {
-			for _, ttl := range c.TTLs {
-				for _, hot := range c.Hots {
-					for _, inv := range c.Invalidations {
-						dir := bundleDir(root, opt{
-							Scenario:     sc,
-							H3Res:        res,
-							TTL:          ttl,
-							HotThreshold: hot,
-							Invalidation: inv,
-						})
-						if err := os.MkdirAll(dir, 0o750); err != nil {
-							return fmt.Errorf("mkdir combo dir: %w", err)
-						}
-						for rep := 1; rep <= reps; rep++ {
-							repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
-							if err := os.MkdirAll(repDir, 0o750); err != nil {
-								return fmt.Errorf("mkdir rep dir: %w", err)
+				dir := bundleDir(root, opt{
+					Scenario:     sc,
+					H3Res:        0,
+					TTL:          ttl,
+					HotThreshold: hot,
+					Invalidation: inv,
+					ZipfS:        zipfS,
+				})
+				if err := os.MkdirAll(dir, 0o750); err != nil {
+					return fmt.Errorf("mkdir combo dir: %w", err)
+				}
+				for rep := 1; rep <= reps; rep++ {
+					repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
+					if err := os.MkdirAll(repDir, 0o750); err != nil {
+						return fmt.Errorf("mkdir rep dir: %w", err)
+					}
+				}
+				continue
+			}
+
+			for _, res := range c.H3ResList {
+				for _, ttl := range c.TTLs {
+					for _, hot := range c.Hots {
+						for _, inv := range c.Invalidations {
+							dir := bundleDir(root, opt{
+								Scenario:     sc,
+								H3Res:        res,
+								TTL:          ttl,
+								HotThreshold: hot,
+								Invalidation: inv,
+								ZipfS:        zipfS,
+							})
+							if err := os.MkdirAll(dir, 0o750); err != nil {
+								return fmt.Errorf("mkdir combo dir: %w", err)
+							}
+							for rep := 1; rep <= reps; rep++ {
+								repDir := filepath.Join(dir, fmt.Sprintf("rep%02d", rep))
+								if err := os.MkdirAll(repDir, 0o750); err != nil {
+									return fmt.Errorf("mkdir rep dir: %w", err)
+								}
 							}
 						}
 					}

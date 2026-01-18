@@ -9,6 +9,7 @@ func TestMatrixExpansionCount(t *testing.T) {
 		TTLs:          []string{"30s", "60s"},
 		Hots:          []string{"5", "10"},
 		Invalidations: []string{"ttl", "kafka"},
+		ZipfSList:     []float64{1.0, 1.3},
 		Reps:          2,
 		OutRoot:       t.TempDir(),
 		DryRun:        true,
