@@ -36,6 +36,7 @@ type Config struct {
 	AppendTimestamp bool
 	TimestampFormat string
 	CentroidFile    string
+	Seed            int64
 }
 
 func loadConfig() Config {
@@ -52,6 +53,7 @@ func loadConfig() Config {
 	flag.BoolVar(&cfg.AppendTimestamp, "append-ts", true, "Append timestamp to output prefix")
 	flag.StringVar(&cfg.TimestampFormat, "ts-format", "iso", "Timestamp format: iso|unix|none")
 	flag.StringVar(&cfg.CentroidFile, "centroids", "", "Optional centroid CSV file (id,lon,lat) to drive BBOXes")
+	flag.Int64Var(&cfg.Seed, "seed", 0, "RNG seed (0 = time-based)")
 	flag.Parse()
 	return cfg
 }
@@ -209,6 +211,7 @@ type summary struct {
 	BBoxes        int       `json:"bboxes"`
 	TargetURL     string    `json:"target"`
 	LayerName     string    `json:"layer"`
+	Seed          int64     `json:"seed"`
 }
 
 type aggregatedResult struct {
@@ -236,8 +239,11 @@ func main() {
 	}
 
 	// precompute random workload
-	seed := time.Now().UnixNano()
-	r := rand.New(rand.NewSource(seed))
+	seedUsed := cfg.Seed
+	if seedUsed == 0 {
+		seedUsed = time.Now().UnixNano()
+	}
+	r := rand.New(rand.NewSource(seedUsed))
 
 	var bboxes []BBox
 	if strings.TrimSpace(cfg.CentroidFile) != "" {
@@ -332,7 +338,7 @@ func main() {
 		go func(id int) {
 			defer wg.Done()
 
-			rWorker := rand.New(rand.NewSource(seed + int64(id) + 1))
+			rWorker := rand.New(rand.NewSource(seedUsed + int64(id) + 1))
 			zipfDist := rand.NewZipf(rWorker, cfg.ZipfS, cfg.ZipfV, imax)
 			for {
 				select {
@@ -425,6 +431,7 @@ func main() {
 		BBoxes:        cfg.BBoxCount,
 		TargetURL:     cfg.TargetURL,
 		LayerName:     cfg.LayerName,
+		Seed:          seedUsed,
 	}
 
 	jsonFile, err := os.Create(filepath.Clean(jsonPath))

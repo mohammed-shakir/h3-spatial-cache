@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"net"
 	"net/http"
@@ -30,6 +31,7 @@ type cfg struct {
 	TargetURL     string
 	Layer         string
 	Duration      time.Duration
+	Warmup        time.Duration
 	Concurrency   int
 	BBoxes        int
 	OutRoot       string
@@ -43,6 +45,8 @@ type cfg struct {
 	ClearCache    bool
 	ZipfS         float64
 	ZipfV         float64
+	Seed          int64
+	SeedMode      string
 }
 
 func main() {
@@ -66,6 +70,7 @@ func parseFlags() cfg {
 	flag.StringVar(&c.TargetURL, "target", "http://localhost:8090/query", "Middleware /query URL")
 	flag.StringVar(&c.Layer, "layer", "demo:NR_polygon", "Layer (WFS typeNames)")
 	flag.DurationVar(&c.Duration, "duration", 2*time.Minute, "Per-combo load duration")
+	flag.DurationVar(&c.Warmup, "warmup", 30*time.Second, "Warm-up duration before measurement (0 disables)")
 	flag.IntVar(&c.Concurrency, "concurrency", 32, "Loadgen concurrency")
 	flag.IntVar(&c.BBoxes, "bboxes", 128, "Distinct BBOXes")
 	flag.Float64Var(&c.ZipfS, "zipf-s", 1.3, "Zipf parameter s (>1)")
@@ -73,6 +78,8 @@ func parseFlags() cfg {
 	flag.StringVar(&c.OutRoot, "out", "results", "Output root dir")
 	flag.BoolVar(&c.DryRun, "dry-run", false, "Only create directory tree; no services")
 	flag.StringVar(&c.CentroidsPath, "centroids", "", "Optional centroid CSV file (id,lon,lat) to forward to loadgen")
+	flag.Int64Var(&c.Seed, "seed", 0, "Campaign RNG seed (0 = time-based). Used to derive per-run loadgen seeds")
+	flag.StringVar(&c.SeedMode, "seed-mode", "combo", "Seed mode: combo|fixed. combo derives per-combo seed from campaign seed + combo ID; fixed uses campaign seed for all combos")
 	flag.StringVar(&scenarios, "scenarios", "baseline,cache", "Scenarios CSV")
 	flag.StringVar(&h3res, "h3res", "7,8,9", "H3 resolutions CSV")
 	flag.StringVar(&ttls, "ttls", "30s,60s", "TTLs CSV (Cache TTL Default)")
@@ -117,6 +124,15 @@ func runAll(c cfg) error {
 		return fmt.Errorf("pre-flight port check failed: %w", err)
 	}
 
+	campaignSeed := c.Seed
+	if campaignSeed == 0 {
+		campaignSeed = time.Now().UnixNano()
+	}
+
+	if strings.TrimSpace(c.SeedMode) == "" {
+		c.SeedMode = "combo"
+	}
+
 	for _, sc := range c.Scenarios {
 		if sc == "baseline" {
 			ttl := "baseline"
@@ -140,7 +156,7 @@ func runAll(c cfg) error {
 				HotThreshold: hot,
 				Invalidation: inv,
 			}
-			if err := runOne(c, root, one); err != nil {
+			if err := runOne(c, root, one, campaignSeed); err != nil {
 				return err
 			}
 			continue
@@ -157,7 +173,7 @@ func runAll(c cfg) error {
 							HotThreshold: hot,
 							Invalidation: inv,
 						}
-						if err := runOne(c, root, one); err != nil {
+						if err := runOne(c, root, one, campaignSeed); err != nil {
 							return err
 						}
 					}
@@ -178,7 +194,7 @@ func sanitize(s string) string {
 	return strings.NewReplacer(":", "", "/", "-", ",", "_").Replace(s)
 }
 
-func runOne(c cfg, root string, o opt) error {
+func runOne(c cfg, root string, o opt, campaignSeed int64) error {
 	dir := bundleDir(root, o)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("mkdir combo dir: %w", err)
@@ -234,6 +250,38 @@ func runOne(c cfg, root string, o opt) error {
 		return fmt.Errorf("middleware not ready: %w", err)
 	}
 
+	seed := campaignSeed
+	if strings.EqualFold(strings.TrimSpace(c.SeedMode), "combo") {
+		seed = deriveComboSeed(campaignSeed, o)
+	}
+
+	if c.Warmup > 0 {
+		warmPrefix := filepath.Join(dir, o.Scenario+"_warmup")
+		warmArgs := []string{
+			"run", "./cmd/baseline-loadgen",
+			"-target", c.TargetURL,
+			"-layer", c.Layer,
+			"-concurrency", fmt.Sprintf("%d", c.Concurrency),
+			"-duration", c.Warmup.String(),
+			"-zipf-s", fmt.Sprintf("%g", c.ZipfS),
+			"-zipf-v", fmt.Sprintf("%g", c.ZipfV),
+			"-bboxes", fmt.Sprintf("%d", c.BBoxes),
+			"-out", warmPrefix,
+			"-append-ts=false",
+			"-seed", fmt.Sprintf("%d", seed),
+		}
+		if strings.TrimSpace(c.CentroidsPath) != "" {
+			warmArgs = append(warmArgs, "-centroids", c.CentroidsPath)
+		}
+
+		warm := exec.Command("go", warmArgs...) // #nosec G204 -- local CLI runner; argv is constructed (no shell) from fixed flags + validated inputs
+		warm.Stdout = mustFile(filepath.Join(dir, "loadgen_warmup.stdout.log"))
+		warm.Stderr = mustFile(filepath.Join(dir, "loadgen_warmup.stderr.log"))
+		if err := warm.Run(); err != nil {
+			return fmt.Errorf("warmup loadgen: %w", err)
+		}
+	}
+
 	go func() {
 		f := filepath.Join(dir, "docker_stats.csv")
 		_ = runCaptureStats(f, "postgis", "geoserver")
@@ -252,14 +300,14 @@ func runOne(c cfg, root string, o opt) error {
 		"-bboxes", fmt.Sprintf("%d", c.BBoxes),
 		"-out", outPrefix,
 		"-append-ts=false",
+		"-seed", fmt.Sprintf("%d", seed),
 	}
 
 	if strings.TrimSpace(c.CentroidsPath) != "" {
 		args = append(args, "-centroids", c.CentroidsPath)
 	}
 
-	// #nosec G204 -- constructing argv for a fixed binary; no shell expansion, flags are static.
-	load := exec.Command("go", args...)
+	load := exec.Command("go", args...) // #nosec G204 -- local CLI runner; argv is constructed (no shell) from fixed flags + validated inputs
 
 	load.Stdout = mustFile(filepath.Join(dir, "loadgen.stdout.log"))
 	load.Stderr = mustFile(filepath.Join(dir, "loadgen.stderr.log"))
@@ -453,6 +501,29 @@ func clearRedis() error {
 	}
 
 	return nil
+}
+
+func deriveComboSeed(campaignSeed int64, o opt) int64 {
+	h := fnv.New64a()
+	_, _ = fmt.Fprintf(h, "%d|%s|%d|%s|%s|%s",
+		campaignSeed,
+		o.Scenario,
+		o.H3Res,
+		o.TTL,
+		o.HotThreshold,
+		o.Invalidation,
+	)
+
+	sum := h.Sum64()
+
+	const maxInt64 = uint64(^uint64(0) >> 1) // 2^63 - 1
+	sum &= maxInt64
+
+	if sum == 0 {
+		sum = 1
+	}
+
+	return int64(sum) // #nosec G115 -- sum is masked to <= MaxInt64 (safe conversion)
 }
 
 func dryRun(c cfg) error {

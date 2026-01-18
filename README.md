@@ -205,13 +205,33 @@ go run ./cmd/baseline-loadgen \
   -bboxes 1024 \
   -timeout 5s \
   -centroids data/NR_polygon_centroids.csv \
+  -seed 123456789 \
   -out results/baseline \
   -append-ts=true \
   -ts-format=iso
 ```
 
 (If you do not have the data/ folder, remove the `-centroids` flag to use
-random bboxes)
+random bboxes).
+
+If you want to warm it up first:
+
+```bash
+go run ./cmd/baseline-loadgen \
+  -target http://localhost:8090/query \
+  -layer demo:NR_polygon \
+  -duration 10s \
+  -concurrency 32 \
+  -zipf-s 1.3 \
+  -zipf-v 1.0 \
+  -bboxes 1024 \
+  -timeout 5s \
+  -centroids data/NR_polygon_centroids.csv \
+  -seed 123456789 \
+  -out results/baseline_warmup \
+  -append-ts=true \
+  -ts-format=iso
+```
 
 or use default parameters:
 
@@ -227,12 +247,15 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 10s \
+  -warmup 10s \
+  -duration 20s \
   -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
+  -seed 123456789 \
+  -seed-mode fixed \
   -out results \
   -scenarios baseline,cache \
   -h3res 7,8,9 \
@@ -248,12 +271,15 @@ go run ./cmd/experiment-runner \
   -prom http://localhost:9090 \
   -target http://localhost:8090/query \
   -layer demo:NR_polygon \
-  -duration 10s \
+  -warmup 10s \
+  -duration 20s \
   -concurrency 32 \
   -zipf-s 1.3 \
   -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
+  -seed 123456789 \
+  -seed-mode fixed \
   -out results \
   -scenarios cache \
   -h3res 8 \
