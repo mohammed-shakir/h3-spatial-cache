@@ -1,0 +1,12 @@
+\begin{tabular}{lrrrrrrrrr}
+\hline
+scenario & h3\_res & target\_rps & p50\_ms\_median & p95\_ms\_median & p99\_ms\_median & throughput\_rps\_median & errors\_sum & postgis\_cpu\_avg\_pct\_median & geoserver\_cpu\_avg\_pct\_median \\
+\hline
+baseline & 0 & 600 & 5.159 & 25.802 & 75.727 & 598.778 & 1 & 44.462 & 217.034 \\
+cache & 8 & 600 & 2.567 & 16.316 & 32.436 & 599.980 & 2 & 8.946 & 34.681 \\
+baseline & 0 & 800 & 5.325 & 29.782 & 85.545 & 789.196 & 5 & 57.580 & 285.845 \\
+cache & 8 & 800 & 2.742 & 17.354 & 35.743 & 799.970 & 4 & 12.129 & 48.748 \\
+baseline & 0 & 1000 & 21.334 & 67.557 & 111.334 & 970.894 & 5 & 83.239 & 392.740 \\
+cache & 8 & 1000 & 4.090 & 39.217 & 98.472 & 979.682 & 2 & 14.961 & 56.434 \\
+\hline
+\end{tabular}
