@@ -248,7 +248,7 @@ go run ./cmd/experiment-runner \
   -reps 3 \
   -concurrency 32 \
   -rps 800 \
-  -zipf-s 1.0,1.1,1.2,1.3,1.4 \
+  -zipf-s 1.1,1.2,1.3,1.4 \
   -zipf-v 1.0 \
   -bboxes 1024 \
   -centroids data/NR_polygon_centroids.csv \
@@ -256,36 +256,10 @@ go run ./cmd/experiment-runner \
   -seed-mode fixed \
   -out results \
   -scenarios baseline,cache \
-  -h3res 5,6,7,8,9,10 \
+  -h3res 7,8,9 \
   -ttls 30s,60s \
   -hots 5,10 \
   -invalidations ttl,kafka
-```
-
-or for a focused test (e.g., just one configuration):
-
-```bash
-go run ./cmd/experiment-runner \
-  -prom http://localhost:9090 \
-  -target http://localhost:8090/query \
-  -layer demo:NR_polygon \
-  -warmup 10s \
-  -duration 20s \
-  -reps 1 \
-  -concurrency 32 \
-  -rps 800 \
-  -zipf-s 1.3 \
-  -zipf-v 1.0 \
-  -bboxes 1024 \
-  -centroids data/NR_polygon_centroids.csv \
-  -seed 123456789 \
-  -seed-mode fixed \
-  -out results \
-  -scenarios cache \
-  -h3res 8 \
-  -ttls 60s \
-  -hots 10 \
-  -invalidations ttl
 ```
 
 (If you do not have the data/ folder, remove the `-centroids` flag to use
